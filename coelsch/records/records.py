@@ -11,6 +11,7 @@ import pandas as pd
 
 from .base import NestedData, NestedDataArray
 from .groupby import RecordsGroupyBy
+from coelsch.experiment import ExperimentParams
 from coelsch.load.counts import IntervalMarkerCounts
 
 log = logging.getLogger('coelsch')
@@ -40,8 +41,11 @@ class BaseRecords(object):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams,
+                 ndim: int | None = None,
+                 dim2_shape: int | None = None,
+                 dim2_labels: list | tuple | None = None,
+                 init_val: int | float = 0.0,
                  metadata: dict | None = None,
                  frozen=False):
         """
@@ -51,11 +55,8 @@ class BaseRecords(object):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
         metadata : dict of coelsch.metadata.MetadataDict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
@@ -63,23 +64,37 @@ class BaseRecords(object):
         """
         self.chrom_sizes = chrom_sizes
         self.bin_size = bin_size
-        self.seq_type = seq_type
-        self.ploidy_type = ploidy_type
+        self.experiment_params = experiment_params
         self.metadata = {}
         if metadata is not None:
             if not isinstance(metadata, dict):
                 raise ValueError('metadata must be dict or None')
             self.add_metadata(**metadata)
-                    
+
         self._cmd = []
-        self._ndim = None
-        self._dim2_shape = None
-        self._init_val = None
+        if ndim == 1 and dim2_shape is not None:
+            raise ValueError("Cannot supply dim2_shape when ndim == 1")
+        if dim2_shape is not None:
+            if dim2_labels is None:
+                dim2_labels = {i: i for i in range(dim2_shape)}
+            else:
+                dim2_labels = {lab: i for i, lab in enumerate(dim2_labels)}
+                if dim2_shape != len(dim2_labels):
+                    raise ValueError("Haplotype/state label list does not match expected number of dimensions")
+        else:
+            dim2_labels = {}
+        self._ndim = ndim
+        self._dim2_shape = dim2_shape
+        self._dim2_labels = dim2_labels
+        self._init_val = init_val
         self.frozen = frozen
         self.nbins = {
             chrom: int(np.ceil(cs / bin_size)) for chrom, cs in chrom_sizes.items()
         }
         self._records = NestedDataArray(levels=('cb', 'chrom'))
+
+    def _get_dim2_idx(self, label):
+        return self._dim2_labels[label]
 
     def _get_arr_shape(self, chrom: str):
         if chrom not in self.chrom_sizes:
@@ -266,7 +281,7 @@ class BaseRecords(object):
         return self._records.pop(cb)
 
     @classmethod
-    def new_like(cls, other, copy_metadata=True):
+    def new_like(cls, other, copy_metadata=True, frozen=None):
         """
         Create a new empty object like another `BaseRecords` instance.
 
@@ -274,6 +289,10 @@ class BaseRecords(object):
         ----------
         other : BaseRecords
             Template object to mimic.
+        copy_metadata : bool
+            Whether to copy metadata
+        frozen : bool or None
+            Inherit if None, else set frozen state
 
         Returns
         -------
@@ -284,10 +303,15 @@ class BaseRecords(object):
         new_instance = cls(
             copy(other.chrom_sizes),
             other.bin_size,
-            copy(other.seq_type),
-            copy(other.ploidy_type),
-            deepcopy(other.metadata) if copy_metadata else None
+            deepcopy(other.experiment_params),
+            metadata=deepcopy(other.metadata) if copy_metadata else None,
+            frozen=frozen if frozen is not None else other.frozen
         )
+        if type(other) == cls:
+            # only copy dimensions when creating new like of same class
+            new_instance._ndim = other._ndim
+            new_instance._dim2_shape = other._dim2_shape
+            new_instance._dim2_labels = other._dim2_labels
         new_instance._cmd = other._cmd
         return new_instance
 
@@ -355,6 +379,10 @@ class BaseRecords(object):
             raise ValueError('chrom_sizes do not match')
         if self.bin_size != other.bin_size:
             raise ValueError('bin_sizes do not match')
+        if (self._ndim != other._ndim) or (self._dim2_shape != other._dim2_shape):
+            raise ValueError('dimensions do not match')
+        if self._dim2_labels != other._dim2_labels:
+            raise ValueError("haplotype/state labels do not match")
         if self.seq_type != other.seq_type:
             log.warning(
                 'merged datasets do not appear to be the same sequencing data type: '
@@ -562,12 +590,20 @@ class BaseRecords(object):
             'dtype': self.__class__.__qualname__,
             'cmd': self._cmd + [' '.join(sys.argv)],
             'bin_size': self.bin_size,
-            'sequencing_data_type': self.seq_type,
-            'ploidy_type': self.ploidy_type,
+            'experiment_params': self.experiment_params.to_json(),
             'chrom_sizes': self.chrom_sizes,
             'shape': self.nbins,
             'records': self._records.to_json(precision, encode_method),
-            'metadata': self._metadata_to_json()
+            'metadata': self._metadata_to_json(),
+            'array_schema': {
+                'ndim': self._ndim,
+                'dim2_shape': self._dim2_shape,
+                'dim2_labels':  (
+                    list(self._dim2_labels)
+                    if self._dim2_labels is not None
+                    else None
+                ),
+            }
         })
 
     def write_json(self, fp: str, precision: int = 2):
@@ -583,6 +619,10 @@ class BaseRecords(object):
         """
         with open(fp, 'w') as f:
             f.write(self.to_json(precision=precision))
+
+    @classmethod
+    def _format_array_schema(self, obj):
+        raise NotImplementedError()
 
     @classmethod
     def read_json(cls, fp_or_obj: str,
@@ -617,12 +657,23 @@ class BaseRecords(object):
             obj = json.loads(fp_or_obj)
         if obj['dtype'] != cls.__qualname__:
             raise ValueError(f'json file does not match signature for {cls.__qualname__}')
+
+        try:
+            exp_params = ExperimentParams.from_json(obj.get('experiment_params'))
+        except KeyError:
+            # legacy format
+            log.warn('loaded object is out of date, consider regenerating with a newer version of coelsch')
+            exp_params = ExperimentParams.from_legacy(
+                seq_type=obj.get('sequencing_data_type', 'other'),
+                ploidy_type=obj.get('ploidy_type', 'haploid'),
+            )
+
         new_instance = cls(obj['chrom_sizes'],
                            obj['bin_size'],
-                           seq_type=obj.get('sequencing_data_type', 'other'),
-                           ploidy_type=obj.get('ploidy_type', 'haploid'),
+                           experiment_params=exp_params,
                            metadata=obj['metadata'],
-                           frozen=frozen)
+                           frozen=frozen,
+                           **cls._format_array_schema(obj))
         new_instance._cmd = obj['cmd'] 
         new_instance._records = NestedDataArray.from_json(
             obj['records'], subset=subset
@@ -646,11 +697,8 @@ class MarkerRecords(BaseRecords):
         The size of each genomic bin.
     nbins : dict of str to int
         Dictionary mapping chromosome names to the number of bins per chromosome.
-    seq_type : str or None
-        A string describing the sequencing data type.
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        e.g. "haploid", "diploid_bc1", "diploid_f2".
+    experiment_params : coelsch.experiment.ExperimentParams
+        The experimental parametrisation
     metadata : dict
         Additional metadata for the record set.
     frozen : bool
@@ -707,8 +755,9 @@ class MarkerRecords(BaseRecords):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams,
+                 haplotypes: list | None = None,
+                 n_haplotypes: int = 2,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -723,20 +772,30 @@ class MarkerRecords(BaseRecords):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
+        haplotypes : list or None
+            an iterable of haplotype names used to label haplotype columns.
+        n_haplotypes: int
+            The number of haplotypes that markers represent. Default is 2.
         metadata : dict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
             If True, prevents creation of new keys in the records.
         """
-        super().__init__(chrom_sizes, bin_size, seq_type, ploidy_type, metadata, frozen)
-        self._ndim = 2
-        self._dim2_shape = 2
-        self._init_val = 0.0
+        super().__init__(
+            chrom_sizes, bin_size, experiment_params,
+            ndim=2, dim2_shape=n_haplotypes, dim2_labels=haplotypes, init_val=0.0,
+            metadata=metadata, frozen=frozen
+        )
+
+    @property
+    def n_haplotypes(self):
+        return self._dim2_shape
+
+    @property
+    def haplotypes(self):
+        return tuple(self._dim2_labels)
 
     def update(self, interval_counts):
         """
@@ -764,7 +823,13 @@ class MarkerRecords(BaseRecords):
         chrom, bin_idx = interval_counts.chrom, interval_counts.bin_idx
         for cb, hap, val in interval_counts.deep_items():
             arr = self._get_or_create_array(cb, chrom)
-            arr[bin_idx, hap] += val
+            try:
+                h_idx = self._dim2_labels[hap]
+            except KeyError:
+                raise KeyError(
+                    f'IntervalMarkerCounts object contains haplotype {hap} not in MarkerRecords.haplotypes'
+                )
+            arr[bin_idx, h_idx] += val
         return self
 
     def merge(self, other, inplace=False):
@@ -798,6 +863,22 @@ class MarkerRecords(BaseRecords):
             tot += m.sum(axis=None)
         return tot
 
+    @classmethod
+    def _format_array_schema(cls, obj):
+        # for backwards compatibility
+        legacy_schema = {
+            'ndim': 2,
+            'dim2_shape': 2,
+            'dim2_labels': [0, 1],
+        }
+        array_schema = obj.get('array_schema', legacy_schema)
+
+        # convert to structure used for initialisation, which is slightly different
+        return {
+            'n_haplotypes': array_schema['dim2_shape'],
+            'haplotypes': array_schema['dim2_labels'],
+        }
+
     def to_json(self, precision: int = 5):
         return super().to_json(precision, encode_method='sparse')
 
@@ -818,11 +899,8 @@ class PredictionRecords(BaseRecords):
         The size of each genomic bin.
     nbins : dict of str to int
         Dictionary mapping chromosome names to the number of bins per chromosome.
-    seq_type : str or None
-        A string describing the sequencing data type.
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        e.g. "haploid", "diploid_bc1", "diploid_f2".
+    experiment_params : coelsch.experiment.ExperimentParams
+        The experimental parametrisation
     metadata : dict
         Additional metadata for the record set.
     frozen : bool
@@ -879,8 +957,10 @@ class PredictionRecords(BaseRecords):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams,
+                 multistate: bool = False,
+                 haplotype_states: list | tuple | None = None,
+                 n_haplotype_states: int | None = None,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -895,20 +975,34 @@ class PredictionRecords(BaseRecords):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
         metadata : dict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
             If True, prevents creation of new keys in the records.
         """
-        super().__init__(chrom_sizes, bin_size, seq_type, ploidy_type, metadata, frozen)
-        self._ndim = 1
-        self._dim2_shape = np.nan
-        self._init_val = np.nan
+        if multistate:
+            ndim = 2
+            dim2_shape = n_haplotype_states
+            dim2_labels = haplotype_states
+        else:
+            ndim = 1
+            dim2_shape = None
+            dim2_labels = None
+        super().__init__(
+            chrom_sizes, bin_size, experiment_params,
+            ndim=ndim, dim2_shape=dim2_shape, dim2_labels=dim2_labels, init_val=np.nan,
+            metadata=metadata, frozen=frozen,
+        )
+
+    @property
+    def n_haplotype_states(self):
+        return self._dim2_shape
+
+    @property
+    def haplotype_states(self):
+        return tuple(self._dim2_labels)
 
     def merge(self, other, inplace=False):
         return super().merge(
@@ -933,6 +1027,8 @@ class PredictionRecords(BaseRecords):
         pd.DataFrame
             DataFrame with shape (n_cells, n_bins) and multi-indexed columns with levels (chrom, pos).
         """
+        if self._ndim != 1:
+            raise NotImplementedError("to_frame only supports scalar PredictionRecords")
         frame = []
         columns = pd.MultiIndex.from_tuples(
             [(chrom, i * self.bin_size)
@@ -977,10 +1073,29 @@ class PredictionRecords(BaseRecords):
             series.append(self._records[cb][chrom][idx])
         return pd.Series(series, index=cb_whitelist, name=f'{chrom}:{pos:d}')
 
+    @classmethod
+    def _format_array_schema(cls, obj):
+        # for backwards compatibility
+        legacy_schema = {
+            'ndim': 1,
+            'dim2_shape': None,
+            'dim2_labels': None,
+        }
+        array_schema = obj.get('array_schema', legacy_schema)
+
+        # convert to structure used for initialisation, which is slightly different
+        return {
+            'n_haplotype_states': array_schema['dim2_shape'],
+            'haplotype_states': array_schema['dim2_labels'],
+            'multistate': array_schema['ndim'] > 1,
+        }
+
     def to_json(self, precision: int = 5):
         return super().to_json(precision, encode_method='full')
 
     def write_bed(self, fn, precision: int = 2):
+        if self._ndim != 1:
+            raise NotImplementedError("write_bed only supports scalar PredictionRecords")
         invs = []
         bs = self.bin_size
         for chrom, cs in self.chrom_sizes.items():

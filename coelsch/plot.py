@@ -214,7 +214,7 @@ def chrom2dtriangle_subplots(chrom_sizes, figsize=(10, 10), xtick_every=1e7):
     return fig, axes
 
 
-def chrom_markerplot(co_markers, chrom_size, bin_size, ax=None, max_yheight=20,
+def chrom_markerplot(co_markers, chrom_size, bin_size, ax=None, max_yheight=20, linewidths=1.0,
                      ref_colour='#0072b2', alt_colour='#d55e00', ori_colour='#252525'):
     """
     Plot the marker coverage for a barcode for a single chromosome.
@@ -256,8 +256,8 @@ def chrom_markerplot(co_markers, chrom_size, bin_size, ax=None, max_yheight=20,
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
-    ax.vlines(pos, base, ref_markers, color=ref_colour, zorder=0)
-    ax.vlines(pos, base, alt_markers, color=alt_colour, zorder=0)
+    ax.vlines(pos, base, ref_markers, color=ref_colour, zorder=0, linewidths=linewidths)
+    ax.vlines(pos, base, alt_markers, color=alt_colour, zorder=0, linewidths=linewidths)
     ax.plot([0, chrom_size], [0, 0], ls='-', color=ori_colour)
     return ax
 
@@ -293,8 +293,8 @@ def _add_gt_vlines(ax, gt, bin_size, ylims, colour='#eeeeee'):
 
 def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), chroms=None,
                            show_mesh_prob=True, annotate_co_number=True,
-                           nco_min_prob_change=5e-3, show_gt=True,
-                           max_yheight='auto', ref_colour='#0072b2', alt_colour='#d55e00'):
+                           nco_min_prob_change=5e-3, show_gt=True, max_yheight='auto',
+                           linewidths=1.0, ref_colour='#0072b2', alt_colour='#d55e00'):
     """
     Plot the marker coverage and crossover probabilities for a single cell across chromosomes.
 
@@ -389,6 +389,7 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
             co_markers.bin_size,
             ax=ax,
             max_yheight=max_yheight,
+            linewidths=linewidths,
             ref_colour=ref_colour,
             alt_colour=alt_colour,
         )
@@ -414,7 +415,7 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
 
 
 def plot_recombination_landscape(co_preds, co_markers=None,
-                                 apply_per_geno=False,
+                                 apply_by='none',
                                  rolling_mean_window_size=1_000_000,
                                  nboots=100, ci=95,
                                  min_prob=5e-3,
@@ -433,8 +434,9 @@ def plot_recombination_landscape(co_preds, co_markers=None,
     co_markers : MarkerRecords, optional
         MarkerRecords object containing the marker data for the dataset. When provided, used for calculating edge
         effects only at chromosome ends only. Default is None.
-    apply_per_geno : bool, optional
-        Whether to group barcodes by genotype for recombination landscape calculation/plotting. Default is True.
+    apply_by : str or func, optional
+        how to group barcodes for recombination landscape calculation/plotting. Can be "none", "genotype" or a function
+        that is passed to PredictionRecords.groupby. Default is "none".
     rolling_mean_window_size : int, optional
         The size of the window for computing the rolling mean (in base pairs). Default is 1,000,000.
     nboots : int, optional
@@ -467,16 +469,13 @@ def plot_recombination_landscape(co_preds, co_markers=None,
         if len(co_preds.chrom_sizes) == 1 and isinstance(axes, mpl.axes.Axes):
             axes = [axes,]
 
-    if not 'genotypes' in co_preds.metadata:
-        apply_per_geno = False
-
     if use_cached and 'recombination_landscape' in co_preds.metadata:
         cm_per_mb = co_preds.metadata['recombination_landscape']
     else:
         cm_per_mb = recombination_landscape(
             co_preds,
             co_markers=co_markers,
-            apply_per_geno=apply_per_geno,
+            apply_by=apply_by,
             rolling_mean_window_size=rolling_mean_window_size,
             nboots=nboots,
             min_prob=min_prob,
@@ -486,11 +485,11 @@ def plot_recombination_landscape(co_preds, co_markers=None,
     lower = (100 - ci) / 2
     upper = 100 - lower
 
-    for geno, geno_cm_per_mb in cm_per_mb.items():
+    for group, group_cm_per_mb in cm_per_mb.items():
         curr_colour = colour
-        for chrom, ax in zip(geno_cm_per_mb, axes):
+        for chrom, ax in zip(group_cm_per_mb, axes):
             x = np.arange(0, co_preds.nbins[chrom]) * co_preds.bin_size
-            c = geno_cm_per_mb[chrom]
+            c = group_cm_per_mb[chrom]
             line, = ax.step(x, np.nanmean(c, axis=0), color=curr_colour)
             # when colour is None this guarantees shading and label colours are correct
             curr_colour = line.get_color()
@@ -501,8 +500,8 @@ def plot_recombination_landscape(co_preds, co_markers=None,
                 alpha=0.25,
                 color=curr_colour
             )
-        if apply_per_geno:
-            axes[-1].plot([], [], color=colour, label=geno)
+        if apply_by != 'none':
+            axes[-1].plot([], [], color=colour, label=group)
             axes[-1].legend()
 
     axes[0].set_ylabel('cM / Mb')
@@ -511,7 +510,7 @@ def plot_recombination_landscape(co_preds, co_markers=None,
 
 
 def plot_allele_ratio(co_preds,
-                      apply_per_geno=False,
+                      apply_by='none',
                       nboots=100, ci=95,
                       axes=None,
                       figsize=(12, 4),
@@ -525,8 +524,9 @@ def plot_allele_ratio(co_preds,
     ----------
     co_preds : PredictionRecords
         PredictionRecords object containing the haplotype predictions.
-    apply_per_geno : bool, optional
-        Whether to group barcodes by genotype for allele frequency calculation/plotting. Default is True.
+    apply_by : str or func, optional
+        How to group barcodes for allele ratio calculation/plotting. Can be "none", "genotype" or a function
+        that is passed to PredictionRecords.groupby. Default is "none".
     nboots : int, optional
         The number of bootstrap iterations for calculating confidence intervals. Default is 100.
     ci : int, optional
@@ -558,18 +558,15 @@ def plot_allele_ratio(co_preds,
         if len(co_preds.chrom_sizes) == 1 and isinstance(axes, mpl.axes.Axes):
             axes = [axes,]
 
-    if not 'genotypes' in co_preds.metadata:
-        apply_per_geno = False
-
     lower = (100 - ci) / 2
     upper = 100 - lower
 
-    for geno, geno_co_preds in co_preds.groupby('genotype' if apply_per_geno else 'none'):
-        N = len(geno_co_preds)
+    for group, group_co_preds in co_preds.groupby(apply_by):
+        N = len(group_co_preds)
         colour = None
-        for chrom, ax in zip(geno_co_preds.chrom_sizes, axes):
-            x = np.arange(0, geno_co_preds.nbins[chrom]) * geno_co_preds.bin_size
-            haps = geno_co_preds[:, chrom].stack_values()
+        for chrom, ax in zip(group_co_preds.chrom_sizes, axes):
+            x = np.arange(0, group_co_preds.nbins[chrom]) * group_co_preds.bin_size
+            haps = group_co_preds[:, chrom].stack_values()
             c = []
             for _ in range(nboots):
                 idx = rng.integers(0, N, size=N)
@@ -583,8 +580,8 @@ def plot_allele_ratio(co_preds,
                 alpha=0.25,
                 color=colour
             )
-        if apply_per_geno:
-            axes[-1].plot([], [], color=colour, label=geno)
+        if apply_by != 'none':
+            axes[-1].plot([], [], color=colour, label=group)
             axes[-1].legend()
     axes[0].set_ylabel('Allele ratio')
 
@@ -608,7 +605,7 @@ def plot_allele_ratio(co_preds,
 def _plot_segdist_1d(seg_dist, chrom_sizes, fig, axes, colour=None, label=None):
     for chrom, ax in zip(chrom_sizes, axes):
         chrom_sd = seg_dist.query('chrom_1 == @chrom')
-        ax.step(chrom_sd.pos_1.values, chrom_sd.lod_score.values, color=colour)
+        line, = ax.step(chrom_sd.pos_1.values, chrom_sd.lod_score.values, color=colour)
         colour = line.get_color()
     axes[0].set_ylabel('LOD score')
     axes[-1].plot([], [], color=colour, label=label)

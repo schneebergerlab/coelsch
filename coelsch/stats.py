@@ -56,36 +56,35 @@ def n_crossovers(cb_co_preds, min_co_prob=5e-3):
     return nco
 
 
-def accuracy_score(cb_co_markers, cb_co_preds, max_score=10):
-    """
-    Calculates a measure of prediction accuracy based on haplotype predictions and observed markers.
 
-    Parameters
-    ----------
-    cb_co_markers : dict
-        A dictionary where keys are chromosomes and values are arrays representing marker counts.
-    cb_co_preds : 
-        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
-    max_score : int, optional
-        The maximum score for accuracy (default is 10).
+def _error_rate(n, d, pseudo=0.5):
+    return (d - n + pseudo) / (d + pseudo + pseudo)
+    
 
-    Returns
-    -------
-    float
-        The accuracy score on a phred-like scale, capped at the provided `max_score`.
-    """
-    nom = 0
-    denom = 0
-    for chrom, m in cb_co_markers.items():
+def aneuploidy_score(cb_co_markers, cb_co_preds, pseudo=0.5):
+    noms = []
+    denoms = []
+    max_error_idx = None
+    max_error_rate = 0.0
+    for i, (chrom, m) in enumerate(cb_co_markers.items()):
         p = cb_co_preds[chrom]
-        nom += (m[:, 0] * (1 - p)).sum() + (m[:, 1] * p).sum()
-        denom += m.sum(axis=None)
-    ratio = nom / denom if denom > 0 else 0
-    delta = 1 - ratio
-    if delta <= 2 ** -max_score:
-        return max_score
-    return -np.log2(delta)
+        n, d = _chrom_agreement(m, p)
+        noms.append(n)
+        denoms.append(d)
+        e = _error_rate(n, d, pseudo)
+        if e > max_error_rate:
+            max_error_idx = i
+            max_error_rate = e
+    max_error_nom = noms.pop(max_error_idx)
+    max_error_denom = denoms.pop(max_error_idx)
+    bg_error_nom = sum(noms)
+    bg_error_denom = sum(denoms)
 
+    return np.log2(
+        _error_rate(max_error_nom, max_error_denom, pseudo) / 
+        _error_rate(bg_error_nom, bg_error_denom, pseudo)
+    )
+    
 
 def uncertainty_score(cb_co_preds):
     """

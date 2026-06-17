@@ -56,7 +56,7 @@ def nonzero_range(arr, axis=-1):
     return np.logical_and(fwd, rev)
 
 
-def calculate_cm_denominator(co_markers, apply_per_geno):
+def calculate_cm_denominator(co_markers, apply_by):
     """
     Calculate the denominator for recombination rate calculations based on marker data.
 
@@ -76,7 +76,7 @@ def calculate_cm_denominator(co_markers, apply_per_geno):
         for recombination calculations for each chromosome.
     """
     denom = NestedDataArray(levels=('genotype', 'chrom'))
-    for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):
+    for geno, geno_co_markers in co_markers.groupby(by=apply_by):
         for chrom in co_markers.chrom_sizes:
             denom[geno, chrom] = nonzero_range(
                 geno_co_markers[:, chrom].stack_values().sum(axis=-1),
@@ -87,7 +87,7 @@ def calculate_cm_denominator(co_markers, apply_per_geno):
 
 def recombination_landscape(co_preds,
                             co_markers=None,
-                            apply_per_geno=True,
+                            apply_by='none',
                             rolling_mean_window_size=1_000_000,
                             nboots=100,
                             min_prob=5e-3,
@@ -107,8 +107,9 @@ def recombination_landscape(co_preds,
         PredictionRecords object containing the haplotype predictions.
     co_markers : MarkerRecords, optional
         Marker records object used to scale the recombination rate. If None, no scaling is performed.
-    apply_per_geno : bool, optional
-        Whether to group barcodes by genotype for recombination landscape calculation. Default is True.
+    apply_by : bool, optional
+        How to group barcodes for recombination landscape calculation. Can be "none", "genotype" or a function
+        that is passed to PredictionRecords.groupby. Default is "none".
     rolling_mean_window_size : int, optional
         The size of the window for the rolling mean filter (default is 1,000,000).
     nboots : int, optional
@@ -136,12 +137,12 @@ def recombination_landscape(co_preds,
     if co_markers is not None:
         if co_preds.barcodes != co_markers.barcodes:
             raise ValueError('Cell barcodes from marker-json-fn and predict-json-fn do not match')
-        denominators = calculate_cm_denominator(co_markers, apply_per_geno)
+        denominators = calculate_cm_denominator(co_markers, apply_by)
     else:
         denominators = None
 
     cm_per_mb = NestedDataArray(levels=('genotype', 'chrom',))
-    for geno, geno_co_preds in co_preds.groupby(by='genotype' if apply_per_geno else 'none'):
+    for geno, geno_co_preds in co_preds.groupby(apply_by):
         N = len(geno_co_preds)
         for chrom, nbins in geno_co_preds.nbins.items():
             chrom_hap_probs = geno_co_preds[:, chrom].stack_values()

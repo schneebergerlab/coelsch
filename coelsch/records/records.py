@@ -1011,6 +1011,21 @@ class PredictionRecords(BaseRecords):
             inplace=inplace
         )
 
+    def get_state_labels(self, cb, chrom):
+        arr = self[cb, chrom]
+
+        if self._ndim == 1:
+            states = self.haplotype_states or (0, 1)
+            return tuple(states[int(x >= 0.5)] for x in arr)
+
+        if self._ndim == 2:
+            states = self.haplotype_states
+            return tuple(states[i] for i in arr.argmax(axis=1))
+
+        else:
+            raise NotImplemented()
+
+
     def to_frame(self, cb_whitelist=None, dtype=None):
         """
         Convert the `PredictionRecords` object to a pandas DataFrame.

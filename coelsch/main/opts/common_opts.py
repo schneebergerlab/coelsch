@@ -14,12 +14,6 @@ coelsch_opts.option(
 )
 
 
-def _replace_other_with_nonetype(ctx, param, value):
-    if value == 'other':
-        return None
-    return value
-
-
 coelsch_opts.option(
     '-x', '--seq-type',
     required=False,
@@ -29,15 +23,37 @@ coelsch_opts.option(
         case_sensitive=False
     ),
     default='other',
-    callback=_replace_other_with_nonetype,
     help='presets for different sequencing data, see manual' # todo !!
+)
+
+
+coelsch_opts.option(
+    '--lifecycle-stage',
+    required=False,
+    subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
+    type=click.Choice(['gametes', 'progeny'], case_sensitive=False),
+    default='gametes',
+    help='sample lifecycle stage used to interpret the experimental design'
+)
+
+
+coelsch_opts.option(
+    '--crossing-strategy',
+    required=False,
+    subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
+    type=click.Choice(
+        ['f1', 'f2', 'backcross', 'testcross', 'three_way', 'four_way'],
+        case_sensitive=False
+    ),
+    default='f1',
+    help='crossing strategy used to interpret the experimental design'
 )
 
 
 coelsch_opts.option(
     '-y', '--ploidy-type',
     required=False,
-    subcommands=['loadbam', 'loadcsl', 'clean', 'predict', 'bam2pred', 'csl2pred'],
+    subcommands=['clean', 'predict', 'bam2pred', 'csl2pred'],
     type=click.Choice(
         ['haploid', 'diploid_bc1', 'diploid_f2'],
         case_sensitive=False

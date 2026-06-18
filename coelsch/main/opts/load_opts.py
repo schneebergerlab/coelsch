@@ -84,11 +84,32 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--min-mapq',
+    subcommands=['loadbam', 'bam2pred'],
+    required=False,
+    type=click.IntRange(0, 255),
+    default=None,
+    help='only reads with MAPQ greater than or equal to this value are used'
+)
+
+
+coelsch_opts.option(
     '--genotype/--no-genotype', 'run_genotype',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
     required=False,
     default=False,
     help='whether to use EM algorithm to infer genotypes (requires --hap-tag-type="multi_haplotype")',
+)
+
+
+coelsch_opts.option(
+    '--genotyping-strategy',
+    subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
+    required=False,
+    type=click.Choice(['auto', 'founder', 'recombinant'], case_sensitive=False),
+    default='auto',
+    help=("genotyping strategy to use. 'auto' uses recombinant mode when "
+          "--recombinant-parent-jsons is provided, otherwise founder mode")
 )
 
 
@@ -143,9 +164,9 @@ coelsch_opts.option(
     nargs=2, type=click.Tuple([_input_file_type, _input_file_type]),
     required=False,
     default=None,
-    help=('This option switches on recombinant genotyping mode. Two pred jsons must be provided, that '
-          'encode the two recombinant haplotypes of each parental genotype. Barcodes from the input '
-          'are then matched to these recombinant genotypes.')
+    help=('Two pred jsons encoding the two recombinant haplotypes of each parental genotype. '
+          'With --genotyping-strategy=auto this switches on recombinant genotyping mode; '
+          'with --genotyping-strategy=founder these files are ignored.')
 )
 
 

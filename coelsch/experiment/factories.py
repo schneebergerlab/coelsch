@@ -13,6 +13,7 @@ def create_experimental_design(
     genotyping_strategy, crossing_combinations=None,
     recombinant_parental_haplotypes=None,
     all_haplotypes=None, bam_fn=None, vcf_fn=None, ref_name=None,
+    has_named_haplotypes=True,
 ):
     experiment_params = ExperimentParams(
         lifecycle_stage=lifecycle_stage,
@@ -20,6 +21,33 @@ def create_experimental_design(
         sequencing_type=sequencing_type,
         genotyping_strategy=genotyping_strategy,
     )
+
+    if not has_named_haplotypes:
+        if genotyping_strategy != "founder":
+            raise ValueError(
+                "unnamed two-column haplotypes only support "
+                "genotyping_strategy='founder'"
+            )
+        if crossing_strategy not in {"f1", "f2"}:
+            raise ValueError(
+                "unnamed two-column haplotypes only support "
+                "crossing_strategy='f1' or crossing_strategy='f2'; use "
+                "multi_haplotype BAM tags or a genotype VCF for complex crosses"
+            )
+        if crossing_combinations is not None:
+            raise ValueError(
+                "crossing_combinations require named haplotypes; omit them for "
+                "star_diploid BAM or cellSNP-lite without a genotype VCF"
+            )
+        if recombinant_parental_haplotypes is not None:
+            raise ValueError(
+                "recombinant_parental_haplotypes require named haplotypes"
+            )
+
+        return ExperimentalDesign(
+            genotypes=[("ref", "alt")],
+            experiment_params=experiment_params,
+        )
 
     if genotyping_strategy == "founder":
 

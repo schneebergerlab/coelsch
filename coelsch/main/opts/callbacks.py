@@ -17,10 +17,18 @@ log = logging.getLogger('coelsch')
 
 def validate_loadbam_input(kwargs):
     '''decorator to validate the input of the loadbam command'''
+    strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
+    recombinant_jsons = kwargs.get('genotype_recombinant_parental_haplotypes')
+    if strategy == 'auto':
+        strategy = 'recombinant' if recombinant_jsons else 'founder'
+        log.info(f"setting genotyping strategy to '{strategy}'")
+    elif strategy == 'founder' and recombinant_jsons:
+        log.info('ignoring --recombinant-parent-jsons because --genotyping-strategy=founder')
+        kwargs['genotype_recombinant_parental_haplotypes'] = None
+    elif strategy == 'recombinant' and not recombinant_jsons:
+        log.error('--recombinant-parent-jsons must be provided when --genotyping-strategy=recombinant')
+    kwargs['genotyping_strategy'] = strategy
     seq_type = kwargs.get('seq_type')
-    if kwargs.get('ploidy_type') is None:
-        # set to haploid for loadbam and loadcsl, other commands infer from data
-        kwargs['ploidy_type'] = 'haploid'
     if kwargs.get('cb_correction_method') == 'auto':
         cb_tag = kwargs.get('cb_tag')
         method = 'exact' if cb_tag in ('CB', 'RG') else '1mm'
@@ -36,7 +44,7 @@ def validate_loadbam_input(kwargs):
             log.info('turning off UMI processing for 10x/Takara ATAC data, or WGS data')
             kwargs['umi_tag'] = None
             kwargs['umi_collapse_method'] = None
-        elif seq_type is None:
+        elif seq_type in (None, 'other'):
             log.error("'-x' / '--seq-type' must be specified when '--umi-collapse-method' is set to 'auto'")
     elif kwargs.get('umi_collapse_method') == 'none':
         log.info('turning off UMI processing')
@@ -55,7 +63,7 @@ def validate_loadbam_input(kwargs):
                     "'--cb-correction-method' is set to 'directional'. This may lead to overcorrection")
     if kwargs.get('run_genotype') and kwargs.get('hap_tag_type') == "star_diploid":
         log.error('--hap-tag-type must be "multi_haplotype" when --genotype is switched on')
-    if kwargs.get('genotype_recombinant_parental_haplotypes') and kwargs.get('genotype_crossing_combinations'):
+    if kwargs.get('genotyping_strategy') == 'recombinant' and kwargs.get('genotype_crossing_combinations'):
         log.error("Provide either --recombinant-parent-jsons or --crossing-combinations, not both.")
     if not kwargs.get('run_genotype') and kwargs.get('hap_tag_type') == "multi_haplotype":
         crossing_combinations = kwargs.get('genotype_crossing_combinations')
@@ -74,12 +82,20 @@ def validate_loadbam_input(kwargs):
 
 def validate_loadcsl_input(kwargs):
     '''decorator to validate the input of the loadcsl command'''
-    if kwargs.get('ploidy_type') is None:
-        # set to haploid for loadbam and loadcsl, other commands infer from data
-        kwargs['ploidy_type'] = 'haploid'
+    strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
+    recombinant_jsons = kwargs.get('genotype_recombinant_parental_haplotypes')
+    if strategy == 'auto':
+        strategy = 'recombinant' if recombinant_jsons else 'founder'
+        log.info(f"setting genotyping strategy to '{strategy}'")
+    elif strategy == 'founder' and recombinant_jsons:
+        log.info('ignoring --recombinant-parent-jsons because --genotyping-strategy=founder')
+        kwargs['genotype_recombinant_parental_haplotypes'] = None
+    elif strategy == 'recombinant' and not recombinant_jsons:
+        log.error('--recombinant-parent-jsons must be provided when --genotyping-strategy=recombinant')
+    kwargs['genotyping_strategy'] = strategy
     if kwargs.get('run_genotype') and kwargs.get('genotype_vcf_fn') is None:
         log.error('--genotype-vcf-fn must be provided when --genotype is switched on')
-    if kwargs.get('genotype_recombinant_parental_haplotypes') and kwargs.get('genotype_crossing_combinations'):
+    if kwargs.get('genotyping_strategy') == 'recombinant' and kwargs.get('genotype_crossing_combinations'):
         log.error("Provide either --recombinant-parent-jsons or --crossing-combinations, not both.")
     return kwargs
 

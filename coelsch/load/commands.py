@@ -14,6 +14,20 @@ log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
+def _read_recombinant_parental_haplotypes(recombinant_parental_haplotypes):
+    if recombinant_parental_haplotypes is None:
+        return None
+
+    from coelsch.records.records import PredictionRecords
+
+    return tuple(
+        haplotypes
+        if isinstance(haplotypes, PredictionRecords)
+        else PredictionRecords.read_json(haplotypes)
+        for haplotypes in recombinant_parental_haplotypes
+    )
+
+
 def _post_load_filtering(co_markers, min_markers_per_cb, min_markers_per_chrom,
                          min_geno_prob, max_geno_error_rate):
     '''
@@ -130,6 +144,13 @@ def run_loadbam(bam_fn, output_json_fn, *,
         cb_correction_method=cb_correction_method
     )
 
+    if genotyping_strategy == 'recombinant':
+        genotype_recombinant_parental_haplotypes = _read_recombinant_parental_haplotypes(
+            genotype_recombinant_parental_haplotypes
+        )
+    else:
+        genotype_recombinant_parental_haplotypes = None
+
     experimental_design = create_experimental_design(
         lifecycle_stage=lifecycle_stage,
         crossing_strategy=crossing_strategy,
@@ -138,6 +159,7 @@ def run_loadbam(bam_fn, output_json_fn, *,
         crossing_combinations=genotype_crossing_combinations,
         recombinant_parental_haplotypes=genotype_recombinant_parental_haplotypes,
         bam_fn=bam_fn,
+        has_named_haplotypes=hap_tag_type == 'multi_haplotype',
     )
 
     co_markers = bam_to_co_markers(
@@ -259,6 +281,13 @@ def run_loadcsl(cellsnp_lite_dir, chrom_sizes_fn, output_json_fn, *,
 
     cb_whitelist = read_cb_whitelist(cb_whitelist_fn, validate_barcodes=validate_barcodes)
 
+    if genotyping_strategy == 'recombinant':
+        genotype_recombinant_parental_haplotypes = _read_recombinant_parental_haplotypes(
+            genotype_recombinant_parental_haplotypes
+        )
+    else:
+        genotype_recombinant_parental_haplotypes = None
+
     experimental_design = create_experimental_design(
         lifecycle_stage=lifecycle_stage,
         crossing_strategy=crossing_strategy,
@@ -268,6 +297,7 @@ def run_loadcsl(cellsnp_lite_dir, chrom_sizes_fn, output_json_fn, *,
         recombinant_parental_haplotypes=genotype_recombinant_parental_haplotypes,
         vcf_fn=genotype_vcf_fn,
         ref_name=reference_genotype_name,
+        has_named_haplotypes=genotype_vcf_fn is not None,
     )
 
     co_markers = cellsnp_lite_to_co_markers(

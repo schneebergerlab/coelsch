@@ -41,7 +41,7 @@ def argmax_smoothed_haplotype(m, window=40):
     return smoothed.argmax(axis=1)
 
 
-def align_foreground_column(X, window=40):
+def align_foreground_column(X, window=40, columns=None):
     """
     Reorder marker counts so the dominant (foreground) haplotype is always in column 0.
     Supports masked arrays (mask is also aligned)
@@ -49,9 +49,11 @@ def align_foreground_column(X, window=40):
     Parameters
     ----------
     X : list of np.ndarray
-        List of marker count arrays, each with shape (bins, 2).
+        List of marker count arrays, each with shape (bins, columns).
     window : int, optional
         Width of the smoothing window for foreground detection (default is 40).
+    columns : tuple or None
+        2-tuple of columns to reorder. Other columns are left in place
 
     Returns
     -------
@@ -61,17 +63,50 @@ def align_foreground_column(X, window=40):
     X_reordered = []
 
     for x in X:
-        fg_idx = argmax_smoothed_haplotype(x, window)
-        idx = np.stack([fg_idx, 1 - fg_idx], axis=1)
+        n_columns = x.shape[1]
+
+        if columns is None:
+            if n_columns != 2:
+                raise ValueError(
+                    "columns must be provided when X has more than 2 columns"
+                )
+            ch0, ch1 = 0, 1
+        else:
+            if len(columns) != 2:
+                raise ValueError("columns must be a 2-tuple")
+            ch0, ch1 = columns
+
+        if ch0 == ch1:
+            raise ValueError("columns must contain two different columns")
+
+        if not (0 <= ch0 < n_columns and 0 <= ch1 < n_columns):
+            raise IndexError("columns contains an out-of-bounds column index")
+
+        # Only use the selected pair to infer foreground/background
+        x_pair = x[:, [ch0, ch1]]
+        fg_idx = argmax_smoothed_haplotype(x_pair, window)
+
+        # Start with identity column order for every row
+        idx = np.broadcast_to(
+            np.arange(n_columns),
+            x.shape
+        ).copy()
+
+        # If fg_idx == 0: keep ch0, ch1
+        # If fg_idx == 1: swap ch0, ch1
+        idx[:, ch0] = np.where(fg_idx == 0, ch0, ch1)
+        idx[:, ch1] = np.where(fg_idx == 0, ch1, ch0)
 
         if isinstance(x, np.ma.MaskedArray):
-            # reorder mask the same way
-            x_reordered = np.take_along_axis(x.data, idx, axis=1)
-            mask_reordered = np.take_along_axis(x.mask, idx, axis=1)
-            X_reordered.append(np.ma.array(x_reordered, mask=mask_reordered))
+            data_reordered = np.take_along_axis(x.data, idx, axis=1)
+            mask_reordered = np.take_along_axis(
+                np.ma.getmaskarray(x),
+                idx,
+                axis=1
+            )
+            X_reordered.append(np.ma.array(data_reordered, mask=mask_reordered))
         else:
-            x_reordered = np.take_along_axis(x, idx, axis=1)
-            X_reordered.append(x_reordered)
+            X_reordered.append(np.take_along_axis(x, idx, axis=1))
 
     return X_reordered
 

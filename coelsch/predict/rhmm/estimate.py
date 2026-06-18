@@ -1,5 +1,3 @@
-import logging
-
 import numpy as np
 
 import torch
@@ -7,80 +5,136 @@ from pomegranate import distributions as pmd
 from pomegranate.gmm import GeneralMixtureModel
 from pomegranate._utils import _update_parameter
 
-
-from coelsch.signal import align_foreground_column, detect_heterozygous_bins
+from coelsch.signal import align_foreground_column, detect_heterozygous_bins, smooth_counts_sum
 from .dists import NegativeBinomial, ZeroInflated
 from .utils import numpy_to_torch
 
 
+def _concat_arrays(X):
+    if any(isinstance(x, np.ma.MaskedArray) for x in X):
+        arr = np.ma.concatenate(X)
+        if np.asarray(arr.mask).shape == ():
+            arr.mask = np.zeros_like(arr.data, dtype=bool)
+        return arr
+    return np.concatenate(X)
+
+
 def _estimate_alpha(m, v):
-    if m <= 0: 
-        return 0.1  # fallback
+    if m <= 0:
+        return 0.1
     return max((v - m) / (m**2), 1e-6)
 
 
-@torch.no_grad()
-def estimate_haploid_emissions(X, window=40, dist_type="poisson"):
-    """
-    Estimate emission parameters for haploid data.
+def _calculate_model_params(component_dosages, fg_mean, bg_mean,
+                            fg_alpha=None, bg_alpha=None,
+                            fg_prior=None, bg_prior=None):
+    component_dosages = np.array(component_dosages)
+    means = component_dosages * fg_mean # multiply dosage by foreground
+    means[component_dosages == 0] = bg_mean # zero dosages are replaced with background
 
-    Returns
-    -------
-    tuple(dict, dict, float)
-        fg_params, bg_params, empty_fraction
-    """
-    X_ordered = align_foreground_column(X, window)
-    if any(isinstance(x, np.ma.MaskedArray) for x in X_ordered):
-        X_flattened = np.ma.concatenate(X_ordered)
+    if fg_alpha is not None and bg_alpha is not None:
+        alphas = np.full_like(component_dosages, fill_value=bg_alpha)
+        alphas[dosage > 0] = fg_alpha
+
+    if fg_prior is not None and bg_prior is not None:
+        priors = np.full_like(component_dosages, fill_value=bg_prior)
+        priors[dosage > 0] = fg_prior
+
+    return means, alphas, priors
+
+
+def _constrain_params(model, component_dosages, dist_type, update=True):
+
+    mean_attr = 'lambdas' if dist_type == 'poisson' else 'means'
+
+    # for haploid instance where model is actually just a distribution
+    if not isinstance(model, pmd.GeneralMixtureModel):
+        model_dists = (model, )
+        component_dosages = (component_dosages, )
     else:
-        X_flattened = np.concatenate(X_ordered)
+        model_dists = model.distributions
 
-    init_fg_mean, init_bg_mean = np.mean(X_flattened, axis=0)
+    fg_means, bg_means = [], []
+    fg_alphas, bg_alphas = [], []
+    fg_priors, bg_priors = [], []
+    for dist, dosage in zip(model_dists, component_dosages):
+        means = getattr(dist.distribution, mean_attr).numpy()
+        if dist_type == 'poisson':
+            alphas = np.full_like(means, fill_value=np.nan)
+        elif dist_type == 'nb':
+            alphas = getattr(dist.distribution, "alphas").numpy()
+        else:
+            raise NotImplementedError()
+        priors = getattr(dist, 'priors').numpy()
 
-    if dist_type == "poisson":
-        zid = ZeroInflated(pmd.Poisson([init_fg_mean, init_bg_mean])).fit(numpy_to_torch(X_flattened))
-        fg_lambda, bg_lambda = zid.distribution.lambdas.numpy()
-        fg_params = {"lambda": float(fg_lambda)}
-        bg_params = {"lambda": float(bg_lambda)}
+        for d, m, a, p in zip(dosage, means, alphas, priors):
+            if d > 0:
+                fg_means.append(m / d)
+                fg_alphas.append(a)
+                fg_priors.append(p)
+            else:
+                bg_means.append(m)
+                bg_alphas.append(a)
+                bg_priors.append(p)
 
-    elif dist_type == "nb":
-        init_fg_var, init_bg_var = np.var(X_flattened, axis=0, ddof=1)
-        init_fg_alpha = _estimate_alpha(init_fg_mean, init_fg_var)
-        init_bg_alpha = _estimate_alpha(init_bg_mean, init_bg_var)
-        zid = ZeroInflated(
-            NegativeBinomial(means=[init_fg_mean, init_bg_mean],
-                             alphas=[init_fg_alpha, init_bg_alpha], frozen=False)
-        ).fit(numpy_to_torch(X_flattened))
-        fg_mean, bg_mean = zid.distribution.means.numpy()
-        fg_alpha, bg_alpha = zid.distribution.alphas.numpy()
-        fg_params = {"mean": float(fg_mean), "alpha": float(fg_alpha)}
-        bg_params = {"mean": float(bg_mean), "alpha": float(bg_alpha)}
+    fg_mean = np.mean(fg_means)
+    bg_mean = np.mean(bg_means)
 
+    if dist_type == 'nb':
+        fg_alpha = np.mean(fg_alphas)
+        bg_alpha = np.mean(bg_alphas)
     else:
-        raise ValueError(f"Unknown dist_type: {dist_type}")
+        fg_alpha, bg_alpha = None, None
 
-    fg_params['empty_fraction'] = float(zid.priors.numpy()[0])
-    bg_params['empty_fraction'] = float(zid.priors.numpy()[1])
-    return fg_params, bg_params
+    fg_prior = np.mean(fg_priors)
+    bg_prior = np.mean(bg_priors)
+
+    if update:
+        # reapply the parameters to the model
+        means, alphas, priors = _calculate_model_params(
+            component_dosages, fg_mean, bg_mean, fg_alpha, bg_alpha, fg_prior, bg_prior
+        )
+        for dist_mean, dist_alpha, dist_prior, dist in zip(means, alphas, priors, model_dists):
+            _update_parameter(
+                getattr(dist.distribution, mean_attr), dist_mean
+            )
+            if dist_type == 'nb':
+                _update_parameter(
+                    getattr(dist.distribution, 'alphas'), dist_alpha
+                )
+            _update_parameter(
+                getattr(dist, 'priors'), dist_prior
+            )
+
+    return fg_mean, bg_mean, fg_alpha, bg_alpha, fg_prior, bg_prior
 
 
-@torch.no_grad()
-def _fit_constrainted_diploid(X, init_fg_mean, init_bg_mean, *, priors=None,
-                              dist_type='poisson', init_fg_alpha=None, init_bg_alpha=None,
-                              max_iter=1000, tol=0.1):
+def _build_zid(dosage, fg_mean, bg_mean, fg_alpha=None, bg_alpha=None, dist_type='poisson'):
+
+    means, alphas = _calculate_model_params(dosage, fg_mean, bg_mean, fg_alpha, bg_alpha)
 
     if dist_type == 'poisson':
-        gmm = GeneralMixtureModel([
-            ZeroInflated(pmd.Poisson([init_fg_mean * 2, init_bg_mean])),
-            ZeroInflated(pmd.Poisson([init_fg_mean, init_fg_mean])),
-        ])
-        mean_attr = 'lambdas'
+        dist = pmd.Poisson(means=means)
+    elif dist_type == 'nb':
+        dist = NegativeBinomial(means=means, alphas=alphas)
     else:
-        gmm = GeneralMixtureModel([
-            ZeroInflated(NegativeBinomial([init_fg_mean * 2, init_bg_mean], [init_fg_alpha, init_bg_alpha])),
-            ZeroInflated(NegativeBinomial([init_fg_mean, init_fg_mean], [init_fg_alpha, init_fg_alpha])),
-        ])
-        mean_attr = 'means'
+        raise NotImplementedError()
+
+    return ZeroInflated(dist)
+
+
+def _build_gmm(component_dosages, *, fg_mean, bg_mean, priors=None,
+               fg_alpha=None, bg_alpha=None, dist_type="poisson"):
+    dists = []
+    for dosage in component_dosages:
+        dists.append(_build_zid(dosage, fg_mean, bg_mean, fg_alpha, bg_alpha, dist_type))
+
+    return GeneralMixtureModel(dists, priors=priors)
+
+
+@torch.no_grad()
+def _fit_constrained_gmm(gmm, component_dosages, priors=None,
+                         dist_type="poisson", max_iter=1000, tol=0.1):
 
     logp = None
     for i in range(max_iter):
@@ -93,57 +147,38 @@ def _fit_constrainted_diploid(X, init_fg_mean, init_bg_mean, *, priors=None,
                 break
 
         gmm.from_summaries()
-
-        hom_means = getattr(gmm.distributions[0].distribution, mean_attr)
-        het_means = getattr(gmm.distributions[1].distribution, mean_attr)
-
-        # average across the means to get a single foreground result
-        fg_mean = float(np.mean([hom_means.numpy()[0] / 2, *het_means.numpy()]))
-        bg_mean = float(hom_means.numpy()[1])
-        _update_parameter(hom_means, [fg_mean * 2, bg_mean])
-        _update_parameter(het_means, [fg_mean, fg_mean])
-
-        if dist_type == 'nb':
-            hom_alphas = gmm.distributions[0].distribution.alphas
-            het_alphas = gmm.distributions[1].distribution.alphas
-            fg_alpha = float(np.mean([hom_alphas.detach().numpy()[0], *het_alphas.detach().numpy()]))
-            bg_alpha = float(hom_alphas.detach().numpy()[1])
-            _update_parameter(hom_alphas, [fg_alpha, bg_alpha])
-            _update_parameter(het_alphas, [fg_alpha, fg_alpha])
-
-        # enforce equivalent zero inflation across distributions
-        hom_empty = gmm.distributions[0].priors
-        het_empty = gmm.distributions[1].priors
-        fg_empty = float(np.mean([hom_empty.numpy()[0], *het_empty.numpy()]))
-        bg_empty = float(hom_empty.numpy()[1])
-        _update_parameter(hom_empty, [fg_empty, bg_empty])
-        _update_parameter(het_empty, [fg_empty, fg_empty])
+        new_params = _constrain_params(
+            gmm, component_dosages, dist_type
+        )
 
     gmm._reset_cache()
-    if dist_type == 'poisson':
-        return fg_mean, bg_mean, fg_empty, bg_empty
-    return fg_mean, bg_mean, fg_alpha, bg_alpha, fg_empty, bg_empty
+    return new_params
 
 
 @torch.no_grad()
-def estimate_diploid_emissions_ordered(X_ordered, window=40, dist_type="poisson"):
-    """
-    Estimate emission parameters for diploid data with known foreground column ordering.
+def estimate_haploid_emissions(X, window=40, dist_type="poisson"):
+    X_ordered = align_foreground_column(X, window)
+    X_flattened = _concat_arrays(X_ordered)
+    init_fg_mean, init_bg_mean = np.mean(X_flattened, axis=0)
+    if dist_type == 'nb':
+        init_fg_var, init_bg_var = np.var(X_flattened, axis=0, ddof=1)
+        init_fg_alpha = _estimate_alpha(init_fg_mean, init_fg_var)
+        init_bg_alpha = _estimate_alpha(init_bg_mean, init_bg_var)
+    else:
+        init_fg_alpha, init_bg_alpha = None, None
 
-    Parameters
-    ----------
-    X_ordered : list of np.ndarray
-        List of marker count arrays with shape (bins, 2), foreground must be column 0.
-    window : int, optional
-        Width of the smoothing window (default is 40).
-    dist_type : str, optional
-        Either "poisson" or "nb".
+    zid = _build_zid(
+        dosage=[1.0, 0.0], # fg bg
+        init_fg_mean, init_bg_mean,
+        fg_alpha=init_fg_alpha, init_bg_alpha=None,
+        dist_type=dist_type
+    )
+    zid = zid.fit(numpy_to_torch(X_flattened))
 
-    Returns
-    -------
-    tuple(dict, dict, float)
-        fg_params, bg_params, empty_fraction
-    """
+    return _constrain_params(zid, dosage=dosage, dist_type=dist_type, update=False)
+
+
+def estimate_diploid_emissions_backcross(X_ordered, window=40, dist_type="poisson"):
     mask = detect_heterozygous_bins(X_ordered, window)
     if any(isinstance(x, np.ma.MaskedArray) for x in X_ordered):
         X_flattened = np.ma.concatenate(X_ordered)
@@ -152,54 +187,100 @@ def estimate_diploid_emissions_ordered(X_ordered, window=40, dist_type="poisson"
     mask = np.concatenate(mask)
 
     init_fg_mean, init_bg_mean = X_flattened[mask, 1].mean(), X_flattened[~mask, 1].mean()
-    priors = np.stack([1 - mask.astype(float), mask.astype(float)], axis=-1)
-
-    if dist_type == "poisson":
-
-        fg_mean, bg_mean, fg_empty, bg_empty = _fit_constrainted_diploid(
-            numpy_to_torch(X_flattened), init_fg_mean, init_bg_mean, priors=priors,
-        )
-
-        fg_params = {'lambda': float(fg_mean), 'empty_fraction': fg_empty}
-        bg_params = {'lambda': float(bg_mean), 'empty_fraction': bg_empty}
-
-    elif dist_type == "nb":
-        init_fg_var, init_bg_var = X_flattened[mask, 1].var(ddof=1), X_flattened[~mask, 1].var(ddof=1)
+    if dist_type == 'nb':
+        init_fg_var = X_flattened[mask, 1].var(ddof=1)
         init_fg_alpha = _estimate_alpha(init_fg_mean, init_fg_var)
+        init_bg_var = X_flattened[~mask, 1].var(ddof=1)
         init_bg_alpha = _estimate_alpha(init_bg_mean, init_bg_var)
-
-        fg_mean, bg_mean, fg_alpha, bg_alpha, fg_empty, bg_empty = _fit_constrainted_diploid(
-            numpy_to_torch(X_flattened), init_fg_mean, init_bg_mean, priors=priors,
-            dist_type='nb', init_fg_alpha=init_fg_alpha, init_bg_alpha=init_bg_alpha
-        )
-
-        fg_params = {"mean": float(fg_mean), "alpha": float(fg_alpha), "empty_fraction": fg_empty}
-        bg_params = {"mean": float(bg_mean), "alpha": float(bg_alpha), "empty_fraction": bg_empty}
-
     else:
-        raise ValueError(f"Unknown dist_type: {dist_type}")
+        init_fg_alpha, init_bg_alpha = None, None
+    label_priors = np.stack([1 - mask.astype(float), mask.astype(float)], axis=-1)
 
-    return fg_params, bg_params
+    component_dosages = [
+        [2.0, 0.0], # hom: 2*fg, bg
+        [1.0, 1.0], # het: fg, fg
+    ]
 
+    gmm = _build_gmm(
+        component_dosages,
+        init_fg_mean, init_bg_mean,
+        priors=label_priors.mean(axis=0),
+        fg_alpha=init_fg_alpha,
+        bg_alpha=init_bg_alpha,
+    )
+    return _fit_constrained_gmm(
+        gmm, component_dosages, priors=label_priors,
+        dist_type=dist_type
+    )
 
 
 def estimate_diploid_emissions_f2(X, window=40, dist_type="poisson"):
-    """
-    Estimate Poisson parameters for diploid F2 data by reordering and calling the ordered estimator.
+    return estimate_diploid_emissions_backcross(
+        align_foreground_column(X, window),
+        window,
+        dist_type=dist_type,
+    )
 
-    Parameters
-    ----------
-    X : list of np.ndarray
-        List of marker count arrays with shape (bins, 2).
-    window : int, optional
-        Width of the smoothing window (default is 40).
-    dist_type : str, optional
-        Either "poisson" or "nb".
 
-    Returns
-    -------
-    tuple(dict, dict, float)
-        fg_params, bg_params, empty_fraction
-    """
-    X_ordered = align_foreground_column(X, window)
-    return estimate_diploid_emissions_ordered(X_ordered, window, dist_type=dist_type)
+def estimate_diploid_emissions_testcross(X, window=40, dist_type='poisson'):
+    # for the purposes of fitting fg and bg, we can ignore the testcross 
+    # parent (channel 1) and just treat the other two channels as a haploid problem
+    return estimate_haploid_emissions(
+        [x[:, (1, 2)] for x in X],
+        window=window,
+        dist_type=dist_type
+    )
+
+
+def align_threeway_columns(X, window=40):
+    X_ordered = align_foreground_column(X, window=window, columns=(1, 2))
+
+    for x in X_ordered:
+        smoothed = smooth_counts_sum(x, window)
+        roll_idx = 2 * smoothed[:, 0] < smoothed[:, (1, 2)].sum(axis=1)
+        x[roll_idx] = np.roll(x[roll_idx], shift=-1, axis=1)
+
+    return X_ordered
+
+
+def estimate_diploid_emissions_three_way(X, window=40, dist_type='poisson'):
+    # reorder A, B, C columns from a ((A*B)*(A*C)) cross
+    X_ordered = align_threeway_columns(X, window)
+    # after reordering the columns should represent:
+    # 2:0:0 (bins with AA haplotype)
+    # 1:1:0 (bins with AB, AC, or BC haplotype)
+    # if we trim off the last column we can then convert to a
+    # backcross-like 2:1 and 1:1 situation.
+    return estimate_diploid_emissions_backcross(
+        [x[:, (0, 1)] for x in X],
+        window,
+        dist_type=dist_type,
+    )
+
+
+def estimate_diploid_emissions_four_way(X, window=40, dist_type='poisson'):
+    # convert to a haploid problem
+    X_pairs = [x[:, (0, 1)] for x in X] + [x[:, (2, 3)] for x in X]
+    return estimate_haploid_emissions(X_pairs, window, dist_type=dist_type)
+
+
+def estimate_emissions(X, experiment_params, window=40, dist_type='poisson'):
+    if experiment_params.genotyping_strategy == 'recombinant':
+        return estimate_haploid_emissions(X, window, dist_type=dist_type)
+
+    if experiment_params.ploidy == 1 or experiment_params.crossing_strategy == 'f1':
+        return estimate_haploid_emissions(X, window, dist_type=dist_type)
+
+    strategy = experiment_params.crossing_strategy
+    if strategy == 'backcross':
+        return estimate_diploid_emissions_backcross(X, window, dist_type=dist_type)
+    if strategy == 'f2':
+        return estimate_diploid_emissions_f2(X, window, dist_type=dist_type)
+    if strategy == 'testcross':
+        return estimate_diploid_emissions_backcross(X, window, dist_type=dist_type)
+    if strategy == 'three_way':
+        return estimate_diploid_emissions_three_way(X, window, dist_type=dist_type)
+    if strategy == 'four_way':
+        return estimate_diploid_emissions_four_way(X, window, dist_type=dist_type)
+
+    raise ValueError(f'Unsupported crossing_strategy: {strategy}')

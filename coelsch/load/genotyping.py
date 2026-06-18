@@ -305,7 +305,7 @@ def _parallel_convert_ic(inv_counts, experimental_design, threshold):
                 supported_genotypes = 0
                 for geno, pos_geno in pos_parental_geno.items():
                     if pos_geno & hap_comb:
-                        supported_genotypes |= 1 << genotype_options.idx[geno]
+                        supported_genotypes |= 1 << experimental_design.idx[geno]
                 cb_pos_geno_markers[supported_genotypes] += min(count, threshold)
             genotype_markers[cb] += cb_pos_geno_markers
     return genotype_markers

@@ -1,5 +1,5 @@
 from collections import defaultdict
-from itertools import combinations
+import itertools as it
 
 from coelsch.records import PredictionRecords
 from .design import ExperimentalDesign
@@ -69,13 +69,13 @@ def from_recombinant_parental_haplotypes(
     _validate_prediction_records(records)
 
     if len(records) == 1:
-        return _setup_from_diploid_parental_predictions(
+        return _setup_from_single_parental_predictions(
             records[0],
             experiment_params,
         )
 
     if len(records) == 2:
-        return _setup_from_two_gamete_parental_predictions(
+        return _setup_from_double_parental_predictions(
             records[0],
             records[1],
             experiment_params,
@@ -177,7 +177,7 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
 
     positional_genotypes = PositionalGenotypes(
         left.nbins,
-        genotyping_strategy=experimental_params.genotyping_strategy
+        genotyping_strategy=experiment_params.genotyping_strategy
     )
 
     for sample in left.barcodes:
@@ -210,7 +210,7 @@ def _setup_from_single_parental_predictions(record, experiment_params):
 
     positional_genotypes = PositionalGenotypes(
         record.nbins,
-        genotyping_strategy=experimental_params.genotyping_strategy
+        genotyping_strategy=experiment_params.genotyping_strategy
     )
 
     for sample in record.barcodes:

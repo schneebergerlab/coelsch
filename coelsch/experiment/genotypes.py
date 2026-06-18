@@ -528,7 +528,7 @@ class PositionalGenotypes:
 
     def __init__(self, nbins, genotypes=None, genotyping_strategy='founder'):
         self.nbins = nbins
-        if genotypes == None:
+        if genotypes is None:
             self.genotypes = []
         else:
             self.genotypes = genotypes

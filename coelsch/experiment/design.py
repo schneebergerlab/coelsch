@@ -59,16 +59,15 @@ class ExperimentalDesign:
         """
         Check for duplicate names and equivalent genotype entries.
         """
-        if not allow_equivalent_genotypes:
-            seen = {}
+        seen = {}
 
-            for genotype in self.genotypes:
-                if genotype in seen:
-                    raise ValueError(
-                        "Duplicate or equivalent genotypes detected: "
-                        f"{seen[genotype]!r} and {genotype!r}"
-                    )
-                seen[genotype] = genotype
+        for genotype in self.genotypes:
+            if genotype in seen:
+                raise ValueError(
+                    "Duplicate or equivalent genotypes detected: "
+                    f"{seen[genotype]!r} and {genotype!r}"
+                )
+            seen[genotype] = genotype
 
         seen_names = {}
 

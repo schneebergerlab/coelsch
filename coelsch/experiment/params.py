@@ -127,6 +127,40 @@ class ExperimentParams:
         """
         return 1 if self.lifecycle_stage == "gametes" else 2
 
+    @property
+    def n_haplotypes(self):
+        """
+        number of founder haplotypes implied by the crossing_strategy
+        """
+        if self.crossing_strategy in ("f1", "f2", "backcross"):
+            return 2
+        elif self.crossing_strategy in ("testcross", "three_way"):
+            return 3
+        elif self.crossing_strategy == "four_way":
+            return 4
+        return NotImplemented
+
+    @property
+    def haplotype_states(self):
+        if self.genotyping_strategy == "recombinant":
+            # recombinant genotyping always collapses to two haplotypes
+            return ((0,), (1,))
+
+        states = {
+            "f1": ((0,), (1,)),
+            "f2": ((0, 0), (0, 1), (1, 0), (1, 1)),
+            "backcross": ((0, 0), (0, 1)),
+            "testcross": ((0, 1),(0, 2)),
+            "three_way": ((0, 0), (0, 2), (1, 0), (1, 2)),
+            "four_way": ((0, 2), (0, 3), (1, 2), (1, 3)),
+        }
+
+        return states[self.crossing_strategy]
+
+    @property
+    def n_haplotype_states(self):
+        return len(self.haplotype_states)
+
     def check_compatibility(self, genotype_key):
         """
         Check whether a genotype is compatible with this design.

@@ -1,5 +1,5 @@
 from .params import ExperimentParams
-from .genotypes import GenotypeKey
+from .genotypes import GenotypeKey, PositionalGenotypes
 
 
 class ExperimentalDesign:
@@ -14,7 +14,11 @@ class ExperimentalDesign:
             raise TypeError("experiment_params must be an ExperimentParams instance")
 
         if experiment_params.genotyping_strategy == 'founder':
-            positional_genotypes = None
+            positional_genotypes = PositionalGenotypes(
+                nbins=None,
+                genotypes=genotypes,
+                genotyping_strategy=experiment_params.genotyping_strategy
+            )
         if experiment_params.genotyping_strategy == 'recombinant' and positional_genotypes is None:
             raise ValueError('positional_genotypes must be supplied when '
                              'experiment_params.genotyping_strategy == "recombinant"')
@@ -78,6 +82,13 @@ class ExperimentalDesign:
                 )
 
             seen_names[genotype.name] = genotype
+
+    def __getattr__(self, attr):
+        # inherit from experiment_params
+        if attr in self.experiment_params.__dict__:
+            return getattr(self.experiment_params, attr)
+        else:
+            raise AttributeError(f"{self.__qualname__} object has no attribute '{attr}'")
 
     def get(self, key, default=None):
         """

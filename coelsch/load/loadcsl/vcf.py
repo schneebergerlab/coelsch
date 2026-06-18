@@ -1,28 +1,6 @@
 import pysam
 
 
-def get_vcf_samples(vcf_fn, ref_name):
-    """
-    Extract the list of sample names from a VCF file and add the reference name.
-
-    Parameters
-    ----------
-    vcf_fn : str
-        Path to the VCF file.
-    ref_name : str
-        The name of sample used as the reference genome to add to the list of samples.
-
-    Returns
-    -------
-    frozenset
-        A frozenset containing the sample names (including the reference sample).
-    """
-    samples = [ref_name,]
-    with pysam.VariantFile(vcf_fn) as vcf:
-        samples += sorted(vcf.header.samples)
-    return tuple(samples)
-
-
 def parse_sample_alleles(variant, ref_name):
     """
     Parse the alleles for each sample in a variant record and assign them to reference and alternate groups.

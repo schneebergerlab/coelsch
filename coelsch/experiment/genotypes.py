@@ -8,7 +8,11 @@ class GenotypeKey:
     name: str = None
     parental_roles: str = "undefined"
     sex_roles: tuple = ()
+    leaves: tuple = field(init=False, repr=False)
+    founders: tuple = field(init=False, repr=False)
     founder_set: frozenset = field(init=False)
+    haplotype_index: dict = field(init=False, repr=False)
+    depth: int = field(init=False, repr=False)
 
     VALID_PARENTAL_ROLES = frozenset({"undefined", "sexed"})
     VALID_SEX_LABELS = frozenset({"f", "m"})
@@ -35,10 +39,18 @@ class GenotypeKey:
             tree = self._canonicalise_undefined_tree(tree)
             role_map = {}
 
+        leaves = self._leaves(tree)
+        founders = tuple(dict.fromkeys(leaves))
+        haplotype_index = {hap: i for i, hap in enumerate(founders)}
+
         object.__setattr__(self, "genotype", tree)
         object.__setattr__(self, "parental_roles", parental_roles)
         object.__setattr__(self, "sex_roles", tuple(sorted(role_map.items())))
-        object.__setattr__(self, "founder_set", frozenset(self.founders))
+        object.__setattr__(self, "leaves", leaves)
+        object.__setattr__(self, "founders", founders)
+        object.__setattr__(self, "founder_set", frozenset(founders))
+        object.__setattr__(self, "haplotype_index", haplotype_index)
+        object.__setattr__(self, "depth", self._depth(tree))
 
     @classmethod
     def from_str(cls, genotype_str, name=None, parental_roles="infer"):
@@ -422,20 +434,11 @@ class GenotypeKey:
         return f"({left_str}*{right_str})"
 
     @property
-    def leaves(self):
-        return self._leaves(self.genotype)
-
-    @property
-    def founders(self):
-        return tuple(dict.fromkeys(self.leaves))
-
-    @property
     def n_founders(self):
         return len(self.founders)
 
-    @property
-    def depth(self):
-        return self._depth(self.genotype)
+    def get_haplotype_index(self, hap):
+        return self.haplotype_index[hap]
 
     @property
     def is_simple_cross(self):
@@ -519,3 +522,55 @@ class GenotypeKey:
 
     def __rand__(self, other):
         return self.__and__(other)
+
+
+class PositionalGenotypes:
+
+    def __init__(self, nbins, genotypes=None, genotyping_strategy='founder'):
+        self.nbins = nbins
+        if genotypes == None:
+            self.genotypes = []
+        else:
+            self.genotypes = genotypes
+        self.genotyping_strategy = genotyping_strategy
+        if genotyping_strategy == 'recombinant':
+            self._geno_map = {
+                (chrom, bin_idx): {}
+                for chrom, n in nbins.items()
+                for bin_idx in range(n)
+            }
+        else:
+            self._geno_map = None
+
+    def __getitem__(self, key):
+        if self.genotyping_strategy != "recombinant":
+            raise NotImplementedError()
+        return self._geno_map[key]
+
+    def add_genotype(self, genotype):
+        self.genotypes.append(GenotypeKey.from_any(genotype))
+
+    def get_bin_haplotypes(self, chrom, bin_idx):
+        """
+        Retrieve per-bin founder haplotype pairs for each candidate genotype.
+
+        Parameters
+        ----------
+        chrom : str
+            Chromosome identifier.
+        bin_idx : int
+            Zero-based bin index on the chromosome.
+
+        Returns
+        -------
+        dict
+            If ``genotyping_strategy='founder'``: ``{GenotypeKey -> GenotypeKey}`` (identity).
+            If ``genotyping_strategy='recombinant'``: ``{GenotypeKey_overall -> GenotypeKey_positional}``
+            for the requested bin.
+        """
+        if self.genotyping_strategy == 'founder':
+            return {
+                geno: geno for geno in self.genotypes
+            }
+        else:
+            return self[(chrom, bin_idx)]

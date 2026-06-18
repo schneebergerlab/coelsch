@@ -1,9 +1,55 @@
 from collections import defaultdict
+from itertools import combinations
 
 from coelsch.records import PredictionRecords
 from .design import ExperimentalDesign
 from .params import ExperimentParams
-from .genotypes import GenotypeKey
+from .genotypes import GenotypeKey, PositionalGenotypes
+from .utils import get_all_haplotypes_bam, get_all_haplotypes_vcf
+
+
+def create_experimental_design(
+    lifecycle_stage, crossing_strategy, sequencing_type,
+    genotyping_strategy, crossing_combinations=None,
+    recombinant_parental_haplotypes=None,
+    all_haplotypes=None, bam_fn=None, vcf_fn=None, ref_name=None,
+):
+    experiment_params = ExperimentParams(
+        lifecycle_stage=lifecycle_stage,
+        crossing_strategy=crossing_strategy,
+        sequencing_type=sequencing_type,
+        genotyping_strategy=genotyping_strategy,
+    )
+
+    if genotyping_strategy == "founder":
+
+        if crossing_combinations is None:
+            if crossing_strategy not in ("f1", "f2"):
+                raise ValueError("for crosses involving three or more founders, crossing_combinations "
+                                 "must be specified")
+            if all_haplotypes is None:
+                if bam_fn is not None and vcf_fn is None:
+                    all_haplotypes = get_all_haplotypes_bam(bam_fn)
+                elif vcf_fn is not None and bam_fn is None:
+                    all_haplotypes = get_all_haplotypes_vcf(vcf_fn, ref_name)
+                else:
+                    raise ValueError("when genotyping_strategy == 'founder', either crossing_combinations or "
+                                     "a method of determining all_haplotypes is required")
+            crossing_combinations = list(it.combinations(sorted(all_haplotypes), r=2))
+
+        experimental_design = ExperimentalDesign(
+            genotypes=crossing_combinations,
+            experiment_params=experiment_params
+        )
+    else:
+        if recombinant_parental_haplotypes is None:
+            raise ValueError("recombinant_parental_haplotypes must be provided "
+                             "when genotyping_strategy == 'recombinant'")
+        experimental_design = from_recombinant_parental_haplotypes(
+            recombinant_parental_haplotypes,
+            experiment_params=experiment_params,
+        )
+    return experimental_design
 
 
 def from_recombinant_parental_haplotypes(
@@ -129,8 +175,10 @@ def _metadata_genotype(record, sample):
 def _setup_from_double_parental_predictions(left, right, experiment_params):
     _validate_double_parental_predictions(left, right)
 
-    genotypes = []
-    positional_genotypes = defaultdict(dict)
+    positional_genotypes = PositionalGenotypes(
+        left.nbins,
+        genotyping_strategy=experimental_params.genotyping_strategy
+    )
 
     for sample in left.barcodes:
         left_genotype = _metadata_genotype(left, sample)
@@ -141,7 +189,7 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
              right_genotype.to_nested_tuple()),
             name=sample,
         )
-        genotypes.append(genotype)
+        positional_genotypes.add_genotype(genotype)
 
         for chrom in left.chrom_sizes:
             left_path = left.get_state_labels(sample, chrom)
@@ -151,21 +199,23 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
                 positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_geno)
 
     return ExperimentalDesign(
-        genotypes,
+        positional_genotypes.genotypes,
         experiment_params=experiment_params,
-        positional_genotypes=dict(positional_genotypes),
+        positional_genotypes=positional_genotypes,
     )
 
 
 def _setup_from_single_parental_predictions(record, experiment_params):
     _validate_single_parental_predictions(record)
 
-    genotypes = []
-    positional_genotypes = defaultdict(dict)
+    positional_genotypes = PositionalGenotypes(
+        record.nbins,
+        genotyping_strategy=experimental_params.genotyping_strategy
+    )
 
     for sample in record.barcodes:
         genotype = _metadata_genotype(record, sample)
-        genotypes.append(genotype)
+        positional_genotypes.add_genotype(genotype)
 
         for chrom in record.chrom_sizes:
             state_path = record.get_state_labels(sample, chrom)
@@ -173,7 +223,7 @@ def _setup_from_single_parental_predictions(record, experiment_params):
                 positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_geno)
 
     return ExperimentalDesign(
-        genotypes,
+        positional_genotypes.genotypes,
         experiment_params=experiment_params,
-        positional_genotypes=dict(positional_genotypes),
+        positional_genotypes=positional_genotypes,
     )

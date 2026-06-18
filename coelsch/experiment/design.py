@@ -105,7 +105,7 @@ class ExperimentalDesign:
         founders = []
         seen = set()
         for genotype in self.genotypes:
-            for founder in genotype.leaves:
+            for founder in genotype.founders:
                 if founder not in seen:
                     founders.append(founder)
                     seen.add(founder)

@@ -4,14 +4,14 @@ import numpy as np
 
 from .background import estimate_overall_background_signal, clean_marker_background
 from .filter import filter_low_coverage_barcodes, filter_genotyping_score
-from .normalise import normalise_bin_coverage, normalise_barcode_depth
+from .normalise import normalise_bin_coverage, normalise_barcode_depth, expected_haplotype_ratio
 from .mask import (
     create_single_cell_haplotype_imbalance_mask,
     create_resequencing_haplotype_imbalance_mask,
     apply_haplotype_imbalance_mask,
     apply_marker_threshold, mask_regions_bed
 )
-from ..utils import load_json, validate_ploidy
+from ..utils import load_json
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 
 
@@ -21,7 +21,7 @@ DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 def run_clean(marker_json_fn, output_json_fn, *,
               co_markers=None, cb_whitelist_fn=None, mask_bed_fn=None, bin_size=25_000,
-              ploidy_type=None, min_markers_per_cb=0, min_markers_per_chrom=0,
+              min_markers_per_cb=0, min_markers_per_chrom=0,
               normalise_bins=True, bin_shrinkage_quantile=0.99,
               normalise_depth=True, max_bin_count=20,
               clean_bg=True, bg_window_size=2_500_000, max_frac_bg=0.2,
@@ -46,8 +46,6 @@ def run_clean(marker_json_fn, output_json_fn, *,
         BED file of regions to mask.
     bin_size : int, default=25000
         Bin size for aggregation in base pairs.
-    ploidy_type : str, default=None
-        The ploidy type of the data, can be "haploid", "diploid_bc1" or "diploid_f2"
     min_markers_per_cb : int, default=0
         Minimum total markers required for a barcode.
     min_markers_per_chrom : int, default=0
@@ -86,7 +84,23 @@ def run_clean(marker_json_fn, output_json_fn, *,
     """
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
-    ploidy_type = validate_ploidy(co_markers, ploidy_type)
+
+    experiment_params = co_markers.experiment_params
+    sequencing_type = experiment_params.sequencing_type
+    ploidy = experiment_params.ploidy
+    n_haplotypes = co_markers.n_haplotypes
+    has_genotypes = 'genotypes' in co_markers.metadata
+    has_genotyping_scores = {
+        'genotype_probability', 'genotype_error_rates'
+    }.issubset(co_markers.metadata)
+
+    expected_ratio = expected_haplotype_ratio(co_markers)
+
+    if apply_per_geno and not has_genotypes:
+        log.warning(
+            'No genotype metadata found; applying clean operations across all barcodes'
+        )
+        apply_per_geno = False
 
     n = len(co_markers)
     if min_markers_per_cb:
@@ -98,23 +112,35 @@ def run_clean(marker_json_fn, output_json_fn, *,
             f'or fewer than {min_markers_per_chrom} markers per chromosome'
         )
     n = len(co_markers)
-    if 'genotypes' in co_markers.metadata:
+    if has_genotyping_scores:
         co_markers = filter_genotyping_score(co_markers, min_geno_prob, max_geno_error_rate, with_copy=False)
         log.info(
             f'Removed {n - len(co_markers)} barcodes with genotyping probability < {min_geno_prob}'
         )
 
     if mask_imbalanced:
-        # mask any bins that still have extreme imbalance
-        # (e.g. due to extreme allele-specific expression differences)
-        if co_markers.seq_type != "wgs":
+        # These imbalance masks estimate two-haplotype allele ratios. Multi-parent
+        # records need a different model, so leave their counts untouched here.
+        if n_haplotypes != 2:
+            log.warning(
+                f'Skipping haplotype imbalance masking for {n_haplotypes}-channel MarkerRecords; '
+                'only two-channel records are supported'
+            )
+        elif sequencing_type != "wgs":
             log.info(
                 f'Masking marker imbalances with single-cell method'
             )
             mask, n_masked = create_single_cell_haplotype_imbalance_mask(
                 co_markers, max_marker_imbalance,
                 apply_per_geno=apply_per_geno,
-                ploidy_type=ploidy_type,
+                expected_ratio=expected_ratio,
+            )
+            co_markers = apply_haplotype_imbalance_mask(
+                co_markers, mask, apply_per_geno=apply_per_geno
+            )
+            tot_bins = sum(co_markers.nbins.values())
+            log.info(
+                f'Masked {n_masked:d}/{tot_bins} bins with extreme marker imbalance'
             )
         else:
             log.info(
@@ -122,29 +148,32 @@ def run_clean(marker_json_fn, output_json_fn, *,
             )
             # special masking method for wgs data which has much greater coverage
             mask, n_masked = create_resequencing_haplotype_imbalance_mask(
-                co_markers, apply_per_geno=apply_per_geno # maybe should expose params?
+                co_markers,
+                expected_ratio=expected_ratio[0] / expected_ratio.sum(),
+                apply_per_geno=apply_per_geno,
             )
-        co_markers = apply_haplotype_imbalance_mask(
-            co_markers, mask, apply_per_geno=apply_per_geno
-        )
-        tot_bins = sum(co_markers.nbins.values())
-        log.info(
-            f'Masked {n_masked:d}/{tot_bins} bins with extreme marker imbalance'
-        )
+            co_markers = apply_haplotype_imbalance_mask(
+                co_markers, mask, apply_per_geno=apply_per_geno
+            )
+            tot_bins = sum(co_markers.nbins.values())
+            log.info(
+                f'Masked {n_masked:d}/{tot_bins} bins with extreme marker imbalance'
+            )
 
     if normalise_bins:
         log.info(
             f'Normalising bin coverage to reduce marker or expression biases'
         )
         co_markers = normalise_bin_coverage(
-            co_markers, shrinkage_q=bin_shrinkage_quantile, correct_hap_bias=False,
-            allow_upweight=True if co_markers.seq_type == "wgs" else False,
-            binwise_hap_mode='independent' if co_markers.seq_type in ('10x_rna', 'bd_rna') else 'shared'
+            co_markers, shrinkage_q=bin_shrinkage_quantile, correct_hap_bias=True,
+            allow_upweight=True if sequencing_type == "wgs" else False,
+            binwise_hap_mode='independent' if sequencing_type in ('10x_rna', 'bd_rna') else 'shared'
         )
 
     n = len(co_markers)
-    # currently this method does not make sense for non-haploid samples
-    if ploidy_type == 'haploid':
+    # currently this method does not make sense for non-haploid samples or
+    # multi-parent marker channels.
+    if ploidy == 1 and n_haplotypes == 2:
         # estimate ambient marker rate for each CB and try to scrub common background markers
         log.info('Estimating background marker rates.')
         co_markers = estimate_overall_background_signal(
@@ -163,6 +192,11 @@ def run_clean(marker_json_fn, output_json_fn, *,
             co_markers = clean_marker_background(
                 co_markers, apply_per_geno=apply_per_geno
             )
+    elif clean_bg:
+        log.warning(
+            f'Skipping background estimation and cleaning for ploidy={ploidy}, '
+            f'n_haplotypes={n_haplotypes}; only haploid two-channel records are supported'
+        )
 
     if normalise_depth:
         log.info(

@@ -49,15 +49,3 @@ coelsch_opts.option(
     help='crossing strategy used to interpret the experimental design'
 )
 
-
-coelsch_opts.option(
-    '-y', '--ploidy-type',
-    required=False,
-    subcommands=['clean', 'predict', 'bam2pred', 'csl2pred'],
-    type=click.Choice(
-        ['haploid', 'diploid_bc1', 'diploid_f2'],
-        case_sensitive=False
-    ),
-    default=None,
-    help='presets for different data ploidy data, instructs what type of model to use'
-)

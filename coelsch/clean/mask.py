@@ -6,7 +6,7 @@ from ..records import MarkerRecords, NestedDataArray
 
 
 def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0.75, min_cb=20,
-                                                ploidy_type='haploid', apply_per_geno=True):
+                                                expected_ratio=None, apply_per_geno=True):
     """
     Create a mask for bins with high haplotype imbalance.
 
@@ -15,14 +15,13 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     co_markers : MarkerRecords
         Marker data with haplotype-specific read counts.
     max_imbalance_mask : float, default=0.75
-        Maximum allowed haplotype ratio before masking.
+        Maximum allowed deviation around the expected first-channel ratio.
     min_cb : int, default=20
         Minimum number of cell barcodes required per bin.
-    ploidy_type: str, default="haploid"
-        The ploidy type of the data - one of "haploid", "diploid_bc1" or "diploid"
+    expected_ratio : array-like, optional
+        Expected haplotype ratio aligned to marker columns. Defaults to 1:1.
     apply_per_geno : bool, default=True
         Mask separately per genotype.
-    
 
     Returns
     -------
@@ -31,6 +30,19 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     int
         Total number of bins masked.
     """
+    if co_markers.n_haplotypes != 2:
+        raise NotImplementedError(
+            'Single-cell haplotype imbalance masking is only supported for two-channel MarkerRecords'
+        )
+    if expected_ratio is None:
+        expected_ratio = np.ones(2, dtype=float)
+    expected_ratio = np.asarray(expected_ratio, dtype=float)
+    expected_ratio /= expected_ratio.sum()
+    expected_first = expected_ratio[0]
+    tolerance = max_imbalance_mask - 0.5
+    lower_bound = max(0.0, expected_first - tolerance)
+    upper_bound = min(1.0, expected_first + tolerance)
+
     imbalance_mask = NestedDataArray(levels=('genotype', 'chrom'))
     n_masked_all_genos = []
     for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):
@@ -49,11 +61,8 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
             with np.errstate(invalid='ignore'):
                 bin_sum = m.sum(axis=1)
                 ratio = m[:, 0] / bin_sum
-            # map ratios to 0.5 for backcross data
-            if ploidy_type == "diploid_bc1":
-                ratio /= (2 / 3)
-            np.nan_to_num(ratio, nan=0.5, copy=False)
-            ratio_mask = (ratio > max_imbalance_mask) | (ratio < (1 - max_imbalance_mask))
+            np.nan_to_num(ratio, nan=expected_first, copy=False)
+            ratio_mask = (ratio > upper_bound) | (ratio < lower_bound)
             count_mask = tot_obs[chrom] >= min_cb
             mask = np.logical_and(ratio_mask, count_mask)
             n_masked += mask.sum(axis=None)
@@ -61,7 +70,6 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
         n_masked_all_genos.append(n_masked)
     co_markers.add_metadata(haplotype_imbalance_mask=imbalance_mask)
     return imbalance_mask, int(np.median(n_masked_all_genos))
-
 
 def median_absolute_deviation(arr):
     """
@@ -106,6 +114,10 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
         Dictionary mapping chromosome names to boolean masks of shape (bins,),
         where True indicates a bin to exclude due to outlier allele ratio.
     """
+    if co_markers.n_haplotypes != 2:
+        raise NotImplementedError(
+            'Resequencing haplotype imbalance masking is only supported for two-channel MarkerRecords'
+        )
     imbalance_mask = NestedDataArray(levels=('genotype', 'chrom'))
     n_masked_all_genos = []
     for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):

@@ -40,7 +40,7 @@ class GenotypeKey:
             role_map = {}
 
         leaves = self._leaves(tree)
-        founders = tuple(dict.fromkeys(leaves))
+        founders = self._ordered_founders(tree, role_map)
         haplotype_index = {hap: i for i, hap in enumerate(founders)}
 
         object.__setattr__(self, "genotype", tree)
@@ -408,6 +408,42 @@ class GenotypeKey:
 
         left, right = node
         return cls._leaves(left) + cls._leaves(right)
+
+    @classmethod
+    def _leaf_paths(cls, node, path=()):
+        if cls.is_leaf(node):
+            return ((node, path),)
+
+        left, right = node
+        return (
+            *cls._leaf_paths(left, path + (0,)),
+            *cls._leaf_paths(right, path + (1,)),
+        )
+
+    @classmethod
+    def _founder_sex_priority(cls, node, role_map):
+        priority = {}
+        for hap, path in cls._leaf_paths(node):
+            if not path:
+                continue
+            roles = role_map.get(path[:-1])
+            if roles is None:
+                continue
+            role_priority = 0 if roles[path[-1]] == "f" else 1
+            priority[hap] = min(priority.get(hap, role_priority), role_priority)
+        return priority
+
+    @classmethod
+    def _ordered_founders(cls, node, role_map=None):
+        if role_map is None:
+            role_map = {}
+        leaves = cls._leaves(node)
+        counts = {hap: leaves.count(hap) for hap in set(leaves)}
+        sex_priority = cls._founder_sex_priority(node, role_map)
+        return tuple(sorted(
+            counts,
+            key=lambda hap: (-counts[hap], sex_priority.get(hap, 2), str(hap)),
+        ))
 
     @classmethod
     def _depth(cls, node):

@@ -26,7 +26,7 @@ import matplotlib as mpl
 from .utils import load_json
 from .recombination import recombination_landscape, coefficient_of_coincidence
 from .distortion import segregation_distortion
-from .load.genotype import GenotypeKey
+from .experiment.genotypes import GenotypeKey
 from .defaults import DEFAULT_RANDOM_SEED
 
 

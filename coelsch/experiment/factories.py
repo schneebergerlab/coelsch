@@ -51,19 +51,33 @@ def create_experimental_design(
 
     if genotyping_strategy == "founder":
 
+        if all_haplotypes is None:
+            if bam_fn is not None and vcf_fn is None:
+                all_haplotypes = get_all_haplotypes_bam(bam_fn)
+            elif vcf_fn is not None and bam_fn is None:
+                all_haplotypes = get_all_haplotypes_vcf(vcf_fn, ref_name)
+
         if crossing_combinations is None:
             if crossing_strategy not in ("f1", "f2"):
                 raise ValueError("for crosses involving three or more founders, crossing_combinations "
                                  "must be specified")
             if all_haplotypes is None:
-                if bam_fn is not None and vcf_fn is None:
-                    all_haplotypes = get_all_haplotypes_bam(bam_fn)
-                elif vcf_fn is not None and bam_fn is None:
-                    all_haplotypes = get_all_haplotypes_vcf(vcf_fn, ref_name)
-                else:
-                    raise ValueError("when genotyping_strategy == 'founder', either crossing_combinations or "
-                                     "a method of determining all_haplotypes is required")
+                raise ValueError("when genotyping_strategy == 'founder', either crossing_combinations or "
+                                 "a method of determining all_haplotypes is required")
             crossing_combinations = list(it.combinations(sorted(all_haplotypes), r=2))
+        elif all_haplotypes is not None:
+            all_haplotypes = set(all_haplotypes)
+            crossing_haplotypes = {
+                hap
+                for crossing_combination in crossing_combinations
+                for hap in GenotypeKey.from_any(crossing_combination).leaves
+            }
+            missing_haplotypes = crossing_haplotypes - all_haplotypes
+            if missing_haplotypes:
+                raise ValueError(
+                    "crossing_combinations include haplotypes not present in the input: "
+                    f"{sorted(missing_haplotypes)!r}"
+                )
 
         experimental_design = ExperimentalDesign(
             genotypes=crossing_combinations,

@@ -152,7 +152,7 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
     inv_counts = parse_cellsnp_lite_interval_counts(
         csl_dir, bin_size, cb_whitelist,
         snp_counts_only=snp_counts_only,
-        keep_genotype=run_genotype,
+        keep_genotype=genotype_vcf_fn is not None,
         genotype_vcf_fn=genotype_vcf_fn,
         validate_barcodes=validate_barcodes,
         reference_name=reference_name,
@@ -182,7 +182,7 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
             genotyping_nmarkers=genotype_nmarkers,
             genotype_error_rates=genotype_error_rates
         )
-    else:
+    elif genotype_vcf_fn is not None:
         if len(experimental_design.genotypes) != 1:
             raise ValueError(
                 'If genotyping is switched off, only one crossing_combination or '

@@ -128,7 +128,7 @@ class ExperimentParams:
         return 1 if self.lifecycle_stage == "gametes" else 2
 
     @property
-    def n_haplotypes(self):
+    def n_founder_haplotypes(self):
         """
         number of founder haplotypes implied by the crossing_strategy
         """
@@ -141,7 +141,19 @@ class ExperimentParams:
         return NotImplemented
 
     @property
+    def n_haplotypes(self):
+        """
+        number of haplotype columns to create in in marker records
+        """
+        if self.genotyping_strategy == "recombinant":
+            return 2
+        return self.n_founder_haplotypes
+
+    @property
     def haplotype_states(self):
+        """
+        the haplotype states to create in PredictionRecords
+        """
         if self.genotyping_strategy == "recombinant":
             # recombinant genotyping always collapses to two haplotypes
             return ((0,), (1,))
@@ -159,6 +171,9 @@ class ExperimentParams:
 
     @property
     def n_haplotype_states(self):
+        """
+        number of haplotype state columns to create in in prediction records
+        """
         return len(self.haplotype_states)
 
     def check_compatibility(self, genotype_key):

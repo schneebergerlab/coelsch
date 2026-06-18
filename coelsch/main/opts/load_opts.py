@@ -68,7 +68,7 @@ coelsch_opts.option(
     subcommands=['loadbam', 'bam2pred'],
     required=False,
     type=click.Choice(['star_diploid', 'multi_haplotype']),
-    default='star_diploid',
+    default='multi_haplotype',
     help='how the haplotype tag is encoded, see manual for details' # todo!
 )
 
@@ -115,36 +115,14 @@ coelsch_opts.option(
 
 def _parse_crossing_combinations(ctx, param, value):
     """
-    Parse --crossing-combinations like "A:B,A:C,B:C" into a list of (hap1, hap2) tuples.
-    Raises on duplicates and reciprocal-equivalent pairs (e.g., "A:B" and "B:A").
+    Parse --crossing-combinations into genotype expression strings.
+
+    GenotypeKey owns expression parsing and validation; the CLI only splits the
+    comma-separated list so CLI and programmatic APIs share one parser.
     """
     if not value:
         return None
-
-    tokens = [t.strip() for t in value.split(',') if t.strip()]
-
-    combos = []
-    seen_unordered = set()
-
-    for t in tokens:
-        haps = [h.strip() for h in t.split(':')]
-        if len(haps) != 2 or not haps[0] or not haps[1]:
-            raise click.BadParameter(
-                f"Invalid crossing combination '{t}'. Use 'hap1:hap2'.",
-                ctx=ctx, param=param
-            )
-        haps = tuple(haps)
-        haps_unordered = frozenset(haps)
-        if haps_unordered in seen_unordered:
-            raise click.BadParameter(
-                f"Duplicate or reciprocal-equivalent crossing combination '{t}'. "
-                "Supply each pair only once.",
-                ctx=ctx, param=param
-            )
-        combos.append(haps)
-        seen_unordered.add(haps_unordered)
-
-    return combos
+    return [token.strip() for token in value.split(',') if token.strip()]
 
 
 coelsch_opts.option(
@@ -153,8 +131,9 @@ coelsch_opts.option(
     required=False,
     default=None,
     callback=_parse_crossing_combinations,
-    help=('comma separated list of allowed combinations of parental haplotypes used in crosses, '
-          'encoded in format "hap1:hap2,hap1:hap3" etc. Incompatible with recombinant mode')
+    help=('comma separated list of allowed genotype expressions, e.g. '
+          '"(col0*ler),((col0*ler)*cvi0),(tsu0[f]cvi0[m])". '
+          'Incompatible with recombinant mode. Designs must match crossing_strategy')
 )
 
 

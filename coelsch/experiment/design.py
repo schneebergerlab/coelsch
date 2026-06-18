@@ -13,26 +13,24 @@ class ExperimentalDesign:
         if not isinstance(experiment_params, ExperimentParams):
             raise TypeError("experiment_params must be an ExperimentParams instance")
 
-        if experiment_params.genotyping_strategy == 'founder':
+        genotypes = tuple(GenotypeKey.from_any(g) for g in genotypes)
+        if not genotypes:
+            raise ValueError("genotypes cannot be empty")
+
+        if experiment_params.genotyping_strategy == "founder":
             positional_genotypes = PositionalGenotypes(
                 nbins=None,
                 genotypes=genotypes,
                 genotyping_strategy=experiment_params.genotyping_strategy
             )
-        if experiment_params.genotyping_strategy == 'recombinant' and positional_genotypes is None:
-            raise ValueError('positional_genotypes must be supplied when '
-                             'experiment_params.genotyping_strategy == "recombinant"')
+        elif positional_genotypes is None:
+            raise ValueError("positional_genotypes must be supplied when experiment_params.genotyping_strategy == 'recombinant'")
+        else:
+            positional_genotypes.genotypes = list(genotypes)
 
         self.experiment_params = experiment_params
         self.positional_genotypes = positional_genotypes
-
-        self.genotypes = tuple(
-            GenotypeKey.from_any(g)
-            for g in genotypes
-        )
-
-        if not self.genotypes:
-            raise ValueError("genotypes cannot be empty")
+        self.genotypes = genotypes
 
         self._check_compatible()
         self._check_duplicates()
@@ -83,16 +81,14 @@ class ExperimentalDesign:
             seen_names[genotype.name] = genotype
 
     def __getattr__(self, attr):
-        # inherit from experiment_params
-        if attr in self.experiment_params.__dict__:
+        try:
             return getattr(self.experiment_params, attr)
-        else:
-            raise AttributeError(f"{self.__qualname__} object has no attribute '{attr}'")
+        except AttributeError as exc:
+            raise AttributeError(
+                f"{type(self).__qualname__} object has no attribute {attr!r}"
+            ) from exc
 
     def get(self, key, default=None):
-        """
-        Get a genotype by name or by GenotypeKey-equivalent input.
-        """
         try:
             return self[key]
         except (KeyError, TypeError, IndexError):
@@ -105,21 +101,24 @@ class ExperimentalDesign:
         return iter(self.genotypes)
 
     def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.genotypes[key]
         if isinstance(key, str):
             return self._geno_dict[key]
-        raise KeyError(key)
+        genotype = GenotypeKey.from_any(key)
+        return self.genotypes[self.idx[genotype]]
 
     def __contains__(self, key):
-        if isinstance(key, GenotypeKey):
-            return key in self.genotypes
-        if isinstance(key, str):
-            return key in self._geno_dict
-        return NotImplemented
+        try:
+            self[key]
+        except (KeyError, TypeError, IndexError):
+            return False
+        return True
 
     def __repr__(self):
         return (
             f"{type(self).__qualname__}("
-            f"n={len(self)}, "
+            f"n_genotypes={len(self)}, "
             f"lifecycle_stage={self.lifecycle_stage!r}, "
             f"crossing_strategy={self.crossing_strategy!r}, "
             f"genotyping_strategy={self.genotyping_strategy!r})"

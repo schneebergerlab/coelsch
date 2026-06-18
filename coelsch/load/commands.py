@@ -5,7 +5,7 @@ from .loadbam import bam_to_co_markers
 from .loadcsl import cellsnp_lite_to_co_markers
 from .barcodes import read_cb_whitelist
 
-from coelsch.experiment import create_experimental_design
+from coelsch.experiment.factories import create_experimental_design
 from coelsch.clean.filter import filter_low_coverage_barcodes, filter_genotyping_score
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 

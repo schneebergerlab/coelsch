@@ -6,7 +6,8 @@ from .utils import read_chrom_sizes
 from .csl import parse_cellsnp_lite
 from .vcf import read_vcf, get_vcf_samples
 from ..counts import IntervalMarkerCounts
-from ..genotype import GenotypeKey, genotype_from_inv_counts
+from ..genotyping import genotype_from_inv_counts, resolve_inv_counts_to_co_markers
+from coelsch.experiment.genotypes import GenotypeKey
 from ..utils import genotyping_results_formatter
 from coelsch.records import MarkerRecords, NestedData
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -168,8 +169,6 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
         genotype_kwargs = {}
 
     if run_genotype:
-        if recombinant_mode and genotype_kwargs.get('crossing_combinations', None) is not None:
-
         (genotypes, genotype_probs,
          genotype_nmarkers, genotype_error_rates,
          inv_counts) = genotype_from_inv_counts(

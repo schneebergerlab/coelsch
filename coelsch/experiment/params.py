@@ -267,7 +267,7 @@ class ExperimentParams:
 
     def to_json(self):
         return {
-            'lifecyle_stage': self.lifecyle_stage,
+            'lifecycle_stage': self.lifecycle_stage,
             'crossing_strategy': self.crossing_strategy,
             'sequencing_type': self.sequencing_type,
             'genotyping_strategy': self.genotyping_strategy
@@ -275,11 +275,18 @@ class ExperimentParams:
 
     @classmethod
     def from_json(cls, obj):
+        if obj is None:
+            raise ValueError('experiment_params JSON object is missing')
+
+        lifecycle_stage = obj.get('lifecycle_stage', obj.get('lifecyle_stage'))
+        if lifecycle_stage is None:
+            raise ValueError("experiment_params JSON requires 'lifecycle_stage'")
+
         return cls(
-            lifecyle_stage=obj['lifecyle_stage'],
+            lifecycle_stage=lifecycle_stage,
             crossing_strategy=obj['crossing_strategy'],
             sequencing_type=obj['sequencing_type'],
-            genotyping_strategy=obj['genotyping_strategy']
+            genotyping_strategy=obj.get('genotyping_strategy', 'founder')
         )
 
     @classmethod
@@ -288,16 +295,17 @@ class ExperimentParams:
             lifecycle_stage = 'gametes'
             crossing_strategy = 'f1'
         elif ploidy_type == 'diploid_f2':
-            lifecyle_stage = 'progeny'
+            lifecycle_stage = 'progeny'
             crossing_strategy = 'f2'
         elif ploidy_type == 'diploid_bc1':
-            lifecyle_stage = 'progeny'
+            lifecycle_stage = 'progeny'
             crossing_strategy = 'backcross'
         else:
             raise ValueError(f'Unexpected ploidy_type "{ploidy_type}" whilst '
                              f'parsing legacy {cls.__qualname__}')
-        exp_params = cls(
-            lifecyle_stage=lifecyle_stage,
+        return cls(
+            lifecycle_stage=lifecycle_stage,
             crossing_strategy=crossing_strategy,
             sequencing_type=seq_type,
+            genotyping_strategy='founder',
         )

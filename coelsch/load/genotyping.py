@@ -10,7 +10,8 @@ from joblib import Parallel, delayed
 
 from .utils import weighted_chunks
 from .counts import IntervalMarkerCounts
-from coelsch.experiment import ExperimentalDesign
+from coelsch.experiment.design import ExperimentalDesign
+from coelsch.experiment.genotypes import GenotypeKey
 from coelsch.utils import spawn_child_rngs
 from coelsch.records import PredictionRecords, NestedData
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -407,7 +408,7 @@ def resolve_inv_counts_to_co_markers(inv_counts, genotypes, experimental_design)
                 if len(supported) != 1:
                     continue
 
-                hap_idx = geno.get_hap_idx(supported[0])
+                hap_idx = geno.get_haplotype_index(supported[0])
                 resolved_ic[cb][hap_idx] += count
         resolved_inv_counts.append(resolved_ic)
     return resolved_inv_counts

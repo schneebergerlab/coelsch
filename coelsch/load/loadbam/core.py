@@ -17,7 +17,7 @@ from ..genotyping import genotype_from_inv_counts, resolve_inv_counts_to_co_mark
 from ..utils import genotyping_results_formatter
 
 from coelsch.records import MarkerRecords, NestedData
-from coelsch.experiment import GenotypeKey
+from coelsch.experiment.genotypes import GenotypeKey
 from coelsch.clean.filter import filter_low_coverage_barcodes, filter_genotyping_score
 from coelsch.defaults import DEFAULT_RANDOM_SEED, DEFAULT_EXCLUDE_CONTIGS
 

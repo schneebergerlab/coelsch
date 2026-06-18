@@ -11,7 +11,7 @@ import pandas as pd
 
 from .base import NestedData, NestedDataArray
 from .groupby import RecordsGroupyBy
-from coelsch.experiment import ExperimentParams
+from coelsch.experiment.params import ExperimentParams
 from coelsch.load.counts import IntervalMarkerCounts
 
 log = logging.getLogger('coelsch')
@@ -299,7 +299,6 @@ class BaseRecords(object):
             frozen=frozen if frozen is not None else other.frozen
         )
         if type(other) == cls:
-            # only copy dimensions when creating new like of same class
             new_instance._ndim = other._ndim
             new_instance._dim2_shape = other._dim2_shape
         new_instance._cmd = other._cmd
@@ -371,11 +370,8 @@ class BaseRecords(object):
             raise ValueError('bin_sizes do not match')
         if (self._ndim != other._ndim) or (self._dim2_shape != other._dim2_shape):
             raise ValueError('dimensions do not match')
-        if self.seq_type != other.seq_type:
-            log.warning(
-                'merged datasets do not appear to be the same sequencing data type: '
-                f'{self.seq_type} and {other.seq_type}'
-            )
+        if self.experiment_params != other.experiment_params:
+            raise ValueError('experiment_params do not match')
 
         if inplace:
             s = self
@@ -583,10 +579,6 @@ class BaseRecords(object):
             'shape': self.nbins,
             'records': self._records.to_json(precision, encode_method),
             'metadata': self._metadata_to_json(),
-            'array_schema': {
-                'ndim': self._ndim,
-                'dim2_shape': self._dim2_shape,
-            }
         })
 
     def write_json(self, fp: str, precision: int = 2):
@@ -602,10 +594,6 @@ class BaseRecords(object):
         """
         with open(fp, 'w') as f:
             f.write(self.to_json(precision=precision))
-
-    @classmethod
-    def _format_array_schema(self, obj):
-        raise NotImplementedError()
 
     @classmethod
     def read_json(cls, fp_or_obj: str,
@@ -641,11 +629,10 @@ class BaseRecords(object):
         if obj['dtype'] != cls.__qualname__:
             raise ValueError(f'json file does not match signature for {cls.__qualname__}')
 
-        try:
-            exp_params = ExperimentParams.from_json(obj.get('experiment_params'))
-        except KeyError:
-            # legacy format
-            log.warn('loaded object is out of date, consider regenerating with a newer version of coelsch')
+        if 'experiment_params' in obj:
+            exp_params = ExperimentParams.from_json(obj['experiment_params'])
+        else:
+            log.warning('loaded object is out of date, consider regenerating with a newer version of coelsch')
             exp_params = ExperimentParams.from_legacy(
                 seq_type=obj.get('sequencing_data_type', 'other'),
                 ploidy_type=obj.get('ploidy_type', 'haploid'),
@@ -660,6 +647,8 @@ class BaseRecords(object):
         new_instance._records = NestedDataArray.from_json(
             obj['records'], subset=subset
         )
+        for cb, chrom, arr in new_instance.deep_items():
+            new_instance._check_arr(arr, chrom)
         return new_instance
 
 
@@ -908,6 +897,7 @@ class PredictionRecords(BaseRecords):
                  chrom_sizes: dict[str, int],
                  bin_size: int,
                  experiment_params: ExperimentParams,
+                 multistate: bool | None = None,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -930,11 +920,20 @@ class PredictionRecords(BaseRecords):
             If True, prevents creation of new keys in the records.
         """
 
+        if multistate is None:
+            multistate = experiment_params.n_haplotype_states > 2
+        ndim = 2 if multistate else 1
+        dim2_shape = experiment_params.n_haplotype_states if multistate else None
+
         super().__init__(
             chrom_sizes, bin_size, experiment_params,
-            ndim=ndim, dim2_shape=experiment_params.n_haplotype_states, init_val=np.nan,
+            ndim=ndim, dim2_shape=dim2_shape, init_val=np.nan,
             metadata=metadata, frozen=frozen,
         )
+
+    @property
+    def multistate(self):
+        return self._ndim == 2
 
     def merge(self, other, inplace=False):
         return super().merge(

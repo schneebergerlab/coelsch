@@ -531,7 +531,7 @@ class PositionalGenotypes:
         if genotypes is None:
             self.genotypes = []
         else:
-            self.genotypes = genotypes
+            self.genotypes = [GenotypeKey.from_any(g) for g in genotypes]
         self.genotyping_strategy = genotyping_strategy
         if genotyping_strategy == 'recombinant':
             self._geno_map = {

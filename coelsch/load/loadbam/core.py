@@ -62,6 +62,7 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
     """
     chrom_sizes = get_chrom_sizes_bam(bam_fn, exclude_contigs=kwargs.get('exclude_contigs', None))
     bin_size = kwargs.get('bin_size')
+    kwargs['allowed_haplotypes'] = experimental_design.founder_haplotypes
 
     log.debug(f'Starting job pool to process bam with {processes} processes')
     with Parallel(n_jobs=processes, backend='loky') as pool:

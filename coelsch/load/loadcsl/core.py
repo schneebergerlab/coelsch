@@ -4,7 +4,7 @@ import numpy as np
 
 from .utils import read_chrom_sizes
 from .csl import parse_cellsnp_lite
-from .vcf import read_vcf, get_vcf_samples
+from .vcf import read_vcf
 from ..counts import IntervalMarkerCounts
 from ..genotyping import genotype_from_inv_counts, resolve_inv_counts_to_co_markers
 from coelsch.experiment.genotypes import GenotypeKey

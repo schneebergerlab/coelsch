@@ -100,6 +100,17 @@ class ExperimentalDesign:
     def __iter__(self):
         return iter(self.genotypes)
 
+    @property
+    def founder_haplotypes(self):
+        founders = []
+        seen = set()
+        for genotype in self.genotypes:
+            for founder in genotype.leaves:
+                if founder not in seen:
+                    founders.append(founder)
+                    seen.add(founder)
+        return tuple(founders)
+
     def __getitem__(self, key):
         if isinstance(key, int):
             return self.genotypes[key]

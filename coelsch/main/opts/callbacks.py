@@ -1,5 +1,5 @@
 import logging
-from coelsch.load.loadbam.utils import get_ha_samples
+from coelsch.experiment.utils import get_all_haplotypes_bam
 
 
 def log_parameters(log_name):
@@ -63,7 +63,7 @@ def validate_loadbam_input(kwargs):
             if len(crossing_combinations) != 1:
                 log.error('when --genotype is switched off only one --crossing-combinations can be provided')
         else:
-            genotypes = get_ha_samples(kwargs['bam_fn'])
+            genotypes = get_all_haplotypes_bam(kwargs['bam_fn'])
             if len(genotypes) != 2:
                 log.error(
                     'when --genotype is switched off and no --crossing-combinations are provided, '

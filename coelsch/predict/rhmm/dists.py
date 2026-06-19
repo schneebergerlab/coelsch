@@ -281,7 +281,9 @@ class ZeroInflated(Distribution):
             return
         X, sample_weight = super().summarize(X, sample_weight=sample_weight)
         X = _check_parameter(X, "X", min_value=0, check_parameter=self.check_data)
-        gamma = torch.zeros_like(_unwrap_mt(X)[0], dtype=self.dtype, device=self.device)
+        X_data = _unwrap_mt(X)[0]
+        gamma = torch.zeros_like(X_data, dtype=self.dtype, device=self.device)
+        logp = torch.zeros_like(X_data, dtype=self.dtype, device=self.device)
 
         for j in range(self.d):
             xj = X[:, j]
@@ -303,16 +305,23 @@ class ZeroInflated(Distribution):
                 )
             log_numer = log_prior_j
             log_denom = torch.logaddexp(log_prior_j, log_1mp + log_p0)
-            gamma[:, j] = mt_where(xj == 0, torch.exp(log_numer - log_denom), torch.zeros_like(_unwrap_mt(xj)[0], dtype=self.dtype))
+            zero_resp = torch.exp(log_numer - log_denom)
+            gamma[:, j] = mt_where(xj == 0, zero_resp, torch.zeros_like(_unwrap_mt(xj)[0], dtype=self.dtype))
+            logp[:, j] = mt_where(
+                xj == 0,
+                log_denom,
+                log_1mp + self._base_logprob_feature(X, j),
+            )
         if sample_weight is not None:
             w = _cast_as_tensor(sample_weight)
         else:
-            w = torch.ones_like(_unwrap_mt(X)[0], dtype=self.dtype, device=self.device)
+            w = torch.ones_like(X_data, dtype=self.dtype, device=self.device)
         self._priors_sum[:] = self._priors_sum + torch.sum(gamma * w, dim=0)
         self._zero_sum[:] = self._zero_sum + torch.sum(w, dim=0)
         w_base = (1 - gamma) * w
         if hasattr(self.distribution, "summarize"):
             self.distribution.summarize(X, sample_weight=w_base)
+        return torch.sum(logp * w)
 
     def from_summaries(self):
         if self.frozen:

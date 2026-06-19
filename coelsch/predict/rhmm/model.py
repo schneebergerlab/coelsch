@@ -88,18 +88,23 @@ class RigidHMM:
 
     def __init__(self, states, rfactor, term_rfactor, trans_prob,
                  fg_params, bg_params, dist_type='poisson', trans_prob_decay_rate=0.25,
-                 device=DEFAULT_DEVICE):
+                 n_haplotypes=None, device=DEFAULT_DEVICE):
         for hap_comb in states:
             if not isinstance(hap_comb, (tuple, list)):
                 raise ValueError(
                     'states should be a list/tuple of tuples, which represent haplotype combinations'
                 )
-            for hap in hap_comb:
-                if hap not in (0, 1):
-                    raise ValueError('haplotypes can only be 0 or 1')
         self.states = tuple(tuple(s) for s in states)
+        if n_haplotypes is None:
+            n_haplotypes = max(hap for state in self.states for hap in state) + 1
+        self.n_haplotypes = int(n_haplotypes)
+        for hap_comb in self.states:
+            for hap in hap_comb:
+                if hap < 0 or hap >= self.n_haplotypes:
+                    raise ValueError(
+                        f'haplotype index {hap} is outside marker channel range 0..{self.n_haplotypes - 1}'
+                    )
         self.nstates = len(self.states)
-        self._state_haplo = np.mean(self.states, axis=1)
         self.rfactor = int(rfactor)
         self.term_rfactor = int(term_rfactor)
         self.trans_prob = float(trans_prob)
@@ -159,12 +164,12 @@ class RigidHMM:
                 )
 
     def _create_distribution(self, state):
-        priors = [self.bg_params['empty_fraction'], self.bg_params['empty_fraction']]
+        priors = [self.bg_params['empty_fraction']] * self.n_haplotypes
         if self.dist_type == 'poisson':
-            lambdas = [self.bg_params['lambda'], self.bg_params['lambda']]
+            lambdas = [self.bg_params['lambda']] * self.n_haplotypes
         else:
-            means = [self.bg_params['mean'], self.bg_params['mean']]
-            alphas = [self.bg_params['alpha'], self.bg_params['alpha']]
+            means = [self.bg_params['mean']] * self.n_haplotypes
+            alphas = [self.bg_params['alpha']] * self.n_haplotypes
         for hap, count in Counter(state).items():
             priors[hap] = self.fg_params['empty_fraction']
             if self.dist_type == "poisson":
@@ -313,7 +318,11 @@ class RigidHMM:
         np.ndarray
             2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
         """
-        return np.clip(self.predict_state_proba(X, batch_size) @ self._state_haplo, 0, 1)
+        if self.nstates != 2:
+            raise NotImplementedError(
+                'predict_haplo_proba only supports two-state models; use predict_state_proba for multistate models'
+            )
+        return np.clip(self.predict_state_proba(X, batch_size)[:, :, 1], 0, 1)
 
     def predict(self, X, batch_size=128):
         """
@@ -332,7 +341,9 @@ class RigidHMM:
         np.ndarray
             2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
         """
-        return self.predict_haplo_proba(X, batch_size)
+        if self.nstates == 2:
+            return self.predict_haplo_proba(X, batch_size)
+        return self.predict_state_proba(X, batch_size)
 
     @torch.no_grad()
     def log_probability(self, X, batch_size=128):
@@ -381,7 +392,10 @@ class RigidHMM:
 
         model = self._model
         n_seq, n_bins, n_haps = X.shape
-        assert n_haps == 2
+        if n_haps != self.n_haplotypes:
+            raise ValueError(
+                f'Input has {n_haps} haplotype channels, but model expects {self.n_haplotypes}'
+            )
         n_states = model.n_distributions
         rfactor = self.rfactor
         log_A = model.edges.to(self._device)
@@ -450,12 +464,13 @@ class RigidHMM:
             X_samples[offset:offset + n_batch] = z
             offset += n_batch
 
-        return X_samples.squeeze()
+        return X_samples
 
     @property
     def params(self):
         return {
             'states': [list(s) for s in self.states],
+            'n_haplotypes': float(self.n_haplotypes),
             'rfactor': float(self.rfactor),
             'term_rfactor': float(self.term_rfactor),
             'trans_prob': float(self.trans_prob),

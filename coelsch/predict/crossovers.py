@@ -47,6 +47,22 @@ def samples_to_crossover_positions(haplotype_samples):
 
     return co_pos, co_signs
 
+def samples_to_transition_targets(state_samples):
+    n_seq, n_samples, n_bins = state_samples.shape
+    co_pos, co_targets = [], []
+    diffs = np.diff(state_samples, axis=2)
+
+    for i in range(n_seq):
+        seq_pos, seq_targets = [], []
+        for sample_idx, d in enumerate(diffs[i]):
+            p = np.nonzero(d)[0]
+            seq_pos.append(p)
+            seq_targets.append(state_samples[i, sample_idx, p + 1])
+        co_pos.append(seq_pos)
+        co_targets.append(seq_targets)
+
+    return co_pos, co_targets
+
 
 def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
                       sample_paths=True, n_samples=10,
@@ -98,10 +114,13 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
                 logprobs[cb] += lp
             if sample_paths:
                 X_samp = rhmm.sample(X, n=n_samples, batch_size=batch_size, rng=rng)
-                co_pos, co_signs = samples_to_crossover_positions(X_samp)
-                for cb, pos, sgn in zip(seen_barcodes, co_pos, co_signs):
-                    for samp, (p, s) in enumerate(zip(pos, sgn)):
-                        crossover_samples[cb, chrom, str(samp)] = np.stack([p, s], axis=-1)
+                if rhmm.nstates == 2:
+                    co_pos, co_values = samples_to_crossover_positions(X_samp)
+                else:
+                    co_pos, co_values = samples_to_transition_targets(X_samp)
+                for cb, pos, values in zip(seen_barcodes, co_pos, co_values):
+                    for samp, (p, v) in enumerate(zip(pos, values)):
+                        crossover_samples[cb, chrom, str(samp)] = np.stack([p, v], axis=-1)
     co_preds.add_metadata(
         rhmm_params=NestedData(
             levels=('misc', ),

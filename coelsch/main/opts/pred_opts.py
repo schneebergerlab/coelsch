@@ -111,6 +111,15 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--write-bed/--no-write-bed',
+    subcommands=['predict', 'bam2pred', 'csl2pred'],
+    required=False,
+    default=True,
+    help='whether to write scalar prediction intervals as a BED file'
+)
+
+
+coelsch_opts.option(
     '-M', '--nco-min-prob-change',
     subcommands=['stats', 'predict', 'plot', 'bam2pred', 'csl2pred'],
     required=False,

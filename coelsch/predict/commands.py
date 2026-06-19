@@ -8,7 +8,7 @@ from .rhmm import train_rhmm, RigidHMM
 from .crossovers import detect_crossovers
 from .doublet import detect_doublets
 
-from coelsch.utils import load_json, validate_ploidy
+from coelsch.utils import load_json
 from coelsch import stats
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 
@@ -20,7 +20,7 @@ DEFAULT_DEVICE = torch.device('cpu')
 
 def run_predict(marker_json_fn, output_json_fn, *,
                 co_markers=None,
-                cb_whitelist_fn=None, bin_size=25_000, ploidy_type=None,
+                cb_whitelist_fn=None, bin_size=25_000,
                 segment_size=1_000_000, terminal_segment_size=50_000,
                 cm_per_mb=4.5, interference_half_life=100_000, distribution_type='poisson',
                 sample_paths=True, n_samples=10,
@@ -44,11 +44,6 @@ def run_predict(marker_json_fn, output_json_fn, *,
         Path to barcode whitelist file.
     bin_size : int, optional
         Genomic bin size (default: 25,000).
-    ploidy_type : str, optional
-        Ploidy type of data used to infer type of model to use. Options are
-        "haploid" with model states [0, 1], "diploid_bc1" with states [00, 01],
-        or "diploid_f2" with states [00, 01, 11]. Default is to infer from data
-        if possible, else "haploid"
     segment_size : int, optional
         Size of internal segments for modeling (default: 1,000,000).
     terminal_segment_size : int, optional
@@ -95,11 +90,27 @@ def run_predict(marker_json_fn, output_json_fn, *,
     """
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
-    ploidy_type = validate_ploidy(co_markers, ploidy_type)
+
+    is_multistate = co_markers.experiment_params.n_haplotype_states > 2
+    if is_multistate:
+        if predict_doublets:
+            raise NotImplementedError(
+                'Doublet prediction is not yet implemented for multistate PredictionRecords; '
+                'rerun with --no-predict-doublets'
+            )
+        if generate_stats:
+            raise NotImplementedError(
+                'Stats generation is not yet implemented for multistate PredictionRecords; '
+                'rerun with --no-stats'
+            )
+        if write_bed:
+            raise NotImplementedError(
+                'BED output is not yet implemented for multistate PredictionRecords; '
+                'rerun with --no-write-bed'
+            )
 
     rhmm = train_rhmm(
         co_markers,
-        model_type=ploidy_type,
         cm_per_mb=cm_per_mb,
         segment_size=segment_size,
         terminal_segment_size=terminal_segment_size,

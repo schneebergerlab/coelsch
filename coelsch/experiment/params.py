@@ -176,6 +176,17 @@ class ExperimentParams:
         """
         return len(self.haplotype_states)
 
+    @property
+    def haplotype_dosage(self):
+        """
+        Expected haplotype dosage under the crossing strategy.
+        """
+        dosage = [0.0] * self.n_haplotypes
+        for state in self.haplotype_states:
+            for hap in state:
+                dosage[hap] += 1
+        return tuple(d / len(self.haplotype_states) for d in dosage)
+
     def check_compatibility(self, genotype_key):
         """
         Check whether a genotype is compatible with this design.

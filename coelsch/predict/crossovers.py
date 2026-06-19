@@ -14,54 +14,65 @@ log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
-def samples_to_crossover_positions(haplotype_samples):
+def _transition_event(old_state, new_state, experiment_params):
+    changed_pos = next(
+        i for i, (old_hap, new_hap) in enumerate(zip(old_state, new_state))
+        if old_hap != new_hap
+    )
+
+    if experiment_params.crossing_strategy == 'f2':
+        return -1, int(np.sign(sum(new_state) - sum(old_state)))
+
+    sign = int(np.sign(new_state[changed_pos] - old_state[changed_pos]))
+
+    if experiment_params.ploidy == 1 or experiment_params.genotyping_strategy == 'recombinant':
+        meiosis = 0
+    elif experiment_params.crossing_strategy in {'backcross', 'testcross'}:
+        meiosis = 1
+    elif experiment_params.crossing_strategy in {'three_way', 'four_way'}:
+        meiosis = changed_pos
+    else:
+        meiosis = 0
+
+    return meiosis, sign
+
+
+def samples_to_crossover_events(state_samples, states, experiment_params):
     """
-    Convert haplotype state samples to crossover positions and directions.
+    Convert sampled HMM state paths to crossover event arrays.
 
-    Parameters
-    ----------
-    haplotype_samples : np.ndarray, shape (n_seq, n_samples, n_bins)
-        Haplotype identity paths (0/1 per bin).
-
-    Returns
-    -------
-    co_pos : list[list[np.ndarray]]
-        For each sequence and sample, array of crossover bin indices.
-    co_signs : list[list[np.ndarray]]
-        Same structure, with +1 for 0→1 and –1 for 1→0 transitions.
+    Each event row is ``[bin_idx, meiosis, sign]``. ``meiosis`` is -1 for
+    unphased F2 transitions, 0 for haploid/recombinant transitions, 1 for the
+    segregating backcross/testcross meiosis, and the changed tuple position for
+    three-way/four-way transitions.
     """
-    n_seq, n_samples, n_bins = haplotype_samples.shape
-    co_pos, co_signs = [], []
-
-    diffs = np.diff(haplotype_samples, axis=2)
+    n_seq, n_samples, _ = state_samples.shape
+    states = tuple(tuple(state) for state in states)
+    events = []
 
     for i in range(n_seq):
-        seq_diffs = diffs[i]
-        seq_pos, seq_sign = [], []
-        for d in seq_diffs:
-            p = np.nonzero(d)[0]
-            seq_pos.append(p)
-            seq_sign.append(np.sign(d[p]))
-        co_pos.append(seq_pos)
-        co_signs.append(seq_sign)
+        seq_events = []
+        for sample_idx in range(n_samples):
+            path = state_samples[i, sample_idx]
+            positions = np.nonzero(np.diff(path))[0]
+            sample_events = []
+            for bin_idx in positions:
+                old_idx = path[bin_idx]
+                new_idx = path[bin_idx + 1]
+                meiosis, sign = _transition_event(
+                    states[old_idx],
+                    states[new_idx],
+                    experiment_params,
+                )
+                sample_events.append((bin_idx, meiosis, sign))
+            if sample_events:
+                sample_events = np.asarray(sample_events, dtype=np.int32)
+            else:
+                sample_events = np.empty((0, 3), dtype=np.int32)
+            seq_events.append(sample_events)
+        events.append(seq_events)
 
-    return co_pos, co_signs
-
-def samples_to_transition_targets(state_samples):
-    n_seq, n_samples, n_bins = state_samples.shape
-    co_pos, co_targets = [], []
-    diffs = np.diff(state_samples, axis=2)
-
-    for i in range(n_seq):
-        seq_pos, seq_targets = [], []
-        for sample_idx, d in enumerate(diffs[i]):
-            p = np.nonzero(d)[0]
-            seq_pos.append(p)
-            seq_targets.append(state_samples[i, sample_idx, p + 1])
-        co_pos.append(seq_pos)
-        co_targets.append(seq_targets)
-
-    return co_pos, co_targets
+    return events
 
 
 def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
@@ -114,13 +125,14 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
                 logprobs[cb] += lp
             if sample_paths:
                 X_samp = rhmm.sample(X, n=n_samples, batch_size=batch_size, rng=rng)
-                if rhmm.nstates == 2:
-                    co_pos, co_values = samples_to_crossover_positions(X_samp)
-                else:
-                    co_pos, co_values = samples_to_transition_targets(X_samp)
-                for cb, pos, values in zip(seen_barcodes, co_pos, co_values):
-                    for samp, (p, v) in enumerate(zip(pos, values)):
-                        crossover_samples[cb, chrom, str(samp)] = np.stack([p, v], axis=-1)
+                events = samples_to_crossover_events(
+                    X_samp,
+                    rhmm.states,
+                    co_markers.experiment_params,
+                )
+                for cb, cb_events in zip(seen_barcodes, events):
+                    for samp, sample_events in enumerate(cb_events):
+                        crossover_samples[cb, chrom, str(samp)] = sample_events
     co_preds.add_metadata(
         rhmm_params=NestedData(
             levels=('misc', ),

@@ -95,6 +95,10 @@ class RigidHMM:
                     'states should be a list/tuple of tuples, which represent haplotype combinations'
                 )
         self.states = tuple(tuple(s) for s in states)
+        state_lengths = {len(state) for state in self.states}
+        if len(state_lengths) != 1:
+            raise ValueError('All HMM states must have the same ploidy')
+        self.ploidy = state_lengths.pop()
         if n_haplotypes is None:
             n_haplotypes = max(hap for state in self.states for hap in state) + 1
         self.n_haplotypes = int(n_haplotypes)
@@ -163,14 +167,26 @@ class RigidHMM:
                     end=end_probs[i],
                 )
 
-    def _create_distribution(self, state):
+    @property
+    def state_haplotype_dosage(self):
+        if not hasattr(self, '_state_haplotype_dosage'):
+            dosage = np.zeros((self.nstates, self.n_haplotypes), dtype=np.float32)
+            for i, state in enumerate(self.states):
+                for hap, count in Counter(state).items():
+                    dosage[i, hap] = count
+            self._state_haplotype_dosage = dosage
+        return self._state_haplotype_dosage
+
+    def _create_distribution(self, state_idx):
         priors = [self.bg_params['empty_fraction']] * self.n_haplotypes
         if self.dist_type == 'poisson':
             lambdas = [self.bg_params['lambda']] * self.n_haplotypes
         else:
             means = [self.bg_params['mean']] * self.n_haplotypes
             alphas = [self.bg_params['alpha']] * self.n_haplotypes
-        for hap, count in Counter(state).items():
+        for hap, count in enumerate(self.state_haplotype_dosage[state_idx]):
+            if count <= 0:
+                continue
             priors[hap] = self.fg_params['empty_fraction']
             if self.dist_type == "poisson":
                 lambdas[hap] = self.fg_params["lambda"] * count
@@ -182,8 +198,9 @@ class RigidHMM:
         else:
             return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
 
-    def _create_rigid_chain(self, state):
-        dist = self._create_distribution(state)
+    def _create_rigid_chain(self, state_idx):
+        state = self.states[state_idx]
+        dist = self._create_distribution(state_idx)
         self._distributions[state] = []
         for _ in range(self.rfactor):
             dist = deepcopy(dist)
@@ -253,8 +270,8 @@ class RigidHMM:
         self._distributions = {}
         self._chains = {}
         self._model = DenseHMM(frozen=True)
-        for state in self.states:
-            self._create_rigid_chain(state)
+        for state_idx in range(self.nstates):
+            self._create_rigid_chain(state_idx)
         self._add_transitions()
         log.debug(f'moving model to device: {self._device}')
         self._model.to(self._device)
@@ -262,16 +279,16 @@ class RigidHMM:
             f'Finished initialising model with {self._model.n_distributions} distributions'
         )
 
-    torch.no_grad()
+    @torch.no_grad()
     def predict_state_proba(self, X, batch_size=128):
         """
-        Predicts state probabilities for input marker arrays. Each state can represent a single
-        haplotype (for haploid data) or a mixture of two or more haplotypes (for diploid+ data)
+        Predict state probabilities for input marker arrays. Each state can represent a single
+        haplotype or a combination of haplotypes for diploid+ data.
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
+            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
 
@@ -298,52 +315,49 @@ class RigidHMM:
             p_batch = p_batch.reshape(batch_size, chrom_size, self.nstates, self.rfactor).sum(axis=3)
             proba.append(p_batch)
         proba = np.concatenate(proba, axis=0)
-        # convert to single value per bin, representing the probability of alt hap
-
         return proba
 
     def predict_haplo_proba(self, X, batch_size=128):
         """
-        Predicts haplotype probabilities for input marker arrays.
+        Predict marginal haplotype dosages for input marker arrays.
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
+            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
 
         Returns
         -------
         np.ndarray
-            2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
+            3D array of marginal haplotype dosages, with shape (N, L, n_haplotypes).
         """
-        if self.nstates != 2:
-            raise NotImplementedError(
-                'predict_haplo_proba only supports two-state models; use predict_state_proba for multistate models'
-            )
-        return np.clip(self.predict_state_proba(X, batch_size)[:, :, 1], 0, 1)
+        state_proba = self.predict_state_proba(X, batch_size)
+        haplo_proba = state_proba @ self.state_haplotype_dosage
+        return np.clip(haplo_proba, 0, self.ploidy)
 
     def predict(self, X, batch_size=128):
         """
-        Predicts haplotype probabilities for input marker arrays.
-        Alias to RigidHMM.predict_haplo_proba.
+        Predict haplotype dosages for input marker arrays.
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
+            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
 
         Returns
         -------
         np.ndarray
-            2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
+            Scalar haplotype-1 dosage with shape (N, L) for two-haplotype models,
+            otherwise marginal haplotype dosages with shape (N, L, n_haplotypes).
         """
-        if self.nstates == 2:
-            return self.predict_haplo_proba(X, batch_size)
-        return self.predict_state_proba(X, batch_size)
+        haplo_proba = self.predict_haplo_proba(X, batch_size)
+        if self.n_haplotypes == 2:
+            return haplo_proba[:, :, 1]
+        return haplo_proba
 
     @torch.no_grad()
     def log_probability(self, X, batch_size=128):
@@ -508,9 +522,15 @@ class RigidHMM:
                 'alpha': params['bg_alpha'],
                 'empty_fraction': params['bg_empty_fraction']
             }
+        n_haplotypes = params.get('n_haplotypes')
+        if n_haplotypes is None:
+            n_haplotypes = max(hap for state in params['states'] for hap in state) + 1
+
         return cls(
             params['states'], params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
-            trans_prob_decay_rate=params['trans_prob_decay_rate'], device=device
+            trans_prob_decay_rate=params['trans_prob_decay_rate'],
+            n_haplotypes=int(n_haplotypes),
+            device=device
         )

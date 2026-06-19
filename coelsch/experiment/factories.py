@@ -224,15 +224,6 @@ def _metadata_genotype(record, sample):
     return GenotypeKey.from_any(genotype)
 
 
-def _prediction_state_to_tree(genotype, state):
-    mapped = []
-    for value in state:
-        mapped.append(genotype.founders[value])
-    if len(mapped) == 1:
-        return mapped[0]
-    return tuple(mapped)
-
-
 def _setup_from_double_parental_predictions(left, right, experiment_params):
     _validate_double_parental_predictions(left, right)
 
@@ -254,13 +245,13 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
         positional_genotypes.add_genotype(genotype)
 
         for chrom in left.chrom_sizes:
-            left_path = left.get_state_labels(sample, chrom)
-            right_path = right.get_state_labels(sample, chrom)
+            left_path = left.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
+            right_path = right.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
 
-            for bin_idx, (left_state, right_state) in enumerate(zip(left_path, right_path)):
+            for bin_idx, (left_pos_genotype, right_pos_genotype) in enumerate(zip(left_path, right_path)):
                 pos_tree = (
-                    _prediction_state_to_tree(left_genotype, left_state),
-                    _prediction_state_to_tree(right_genotype, right_state),
+                    left_pos_genotype.to_nested_tuple(),
+                    right_pos_genotype.to_nested_tuple(),
                 )
                 positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_tree)
 
@@ -285,10 +276,9 @@ def _setup_from_single_parental_predictions(record, experiment_params):
         positional_genotypes.add_genotype(genotype)
 
         for chrom in record.chrom_sizes:
-            state_path = record.get_state_labels(sample, chrom)
-            for bin_idx, pos_state in enumerate(state_path):
-                pos_tree = _prediction_state_to_tree(genotype, pos_state)
-                positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_tree)
+            pos_genotypes = record.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
+            for bin_idx, pos_genotype in enumerate(pos_genotypes):
+                positional_genotypes[(chrom, bin_idx)][genotype] = pos_genotype
 
     return ExperimentalDesign(
         positional_genotypes.genotypes,

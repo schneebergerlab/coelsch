@@ -91,22 +91,12 @@ def run_predict(marker_json_fn, output_json_fn, *,
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
 
-    is_multistate = co_markers.experiment_params.n_haplotype_states > 2
-    if is_multistate:
+    is_multihaplotype = co_markers.experiment_params.n_haplotypes > 2
+    if is_multihaplotype:
         if predict_doublets:
             raise NotImplementedError(
-                'Doublet prediction is not yet implemented for multistate PredictionRecords; '
+                'Doublet prediction is not yet implemented for multi-haplotype PredictionRecords; '
                 'rerun with --no-predict-doublets'
-            )
-        if generate_stats:
-            raise NotImplementedError(
-                'Stats generation is not yet implemented for multistate PredictionRecords; '
-                'rerun with --no-stats'
-            )
-        if write_bed:
-            raise NotImplementedError(
-                'BED output is not yet implemented for multistate PredictionRecords; '
-                'rerun with --no-write-bed'
             )
 
     rhmm = train_rhmm(

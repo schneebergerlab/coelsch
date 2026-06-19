@@ -897,7 +897,6 @@ class PredictionRecords(BaseRecords):
                  chrom_sizes: dict[str, int],
                  bin_size: int,
                  experiment_params: ExperimentParams,
-                 multistate: bool | None = None,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -920,20 +919,14 @@ class PredictionRecords(BaseRecords):
             If True, prevents creation of new keys in the records.
         """
 
-        if multistate is None:
-            multistate = experiment_params.n_haplotype_states > 2
-        ndim = 2 if multistate else 1
-        dim2_shape = experiment_params.n_haplotype_states if multistate else None
+        ndim = 2 if experiment_params.n_haplotypes > 2 else 1
+        dim2_shape = experiment_params.n_haplotypes if ndim == 2 else None
 
         super().__init__(
             chrom_sizes, bin_size, experiment_params,
             ndim=ndim, dim2_shape=dim2_shape, init_val=np.nan,
             metadata=metadata, frozen=frozen,
         )
-
-    @property
-    def multistate(self):
-        return self._ndim == 2
 
     def merge(self, other, inplace=False):
         return super().merge(
@@ -942,17 +935,69 @@ class PredictionRecords(BaseRecords):
             inplace=inplace
         )
 
-    def get_state_labels(self, cb, chrom):
-        arr = self[cb, chrom]
+    def _haplotype_groups_by_meiosis(self):
+        if self.experiment_params.crossing_strategy == 'f2':
+            raise NotImplementedError(
+                'F2 haplotype labels cannot be assigned to resolved meioses'
+            )
+
         states = self.experiment_params.haplotype_states
+        return tuple(
+            tuple(sorted({state[meiosis_idx] for state in states}))
+            for meiosis_idx in range(len(states[0]))
+        )
 
+    def get_haplotype_dosage(self, cb, chrom):
+        arr = self[cb, chrom]
         if self._ndim == 1:
-            return tuple(states[int(x >= 0.5)] for x in arr)
+            return np.stack([self.experiment_params.ploidy - arr, arr], axis=1)
+        return arr
 
-        if self._ndim == 2:
-            return tuple(states[i] for i in arr.argmax(axis=1))
+    def _haplotype_labels_to_genotype_keys(self, cb, labels):
+        from coelsch.experiment.genotypes import GenotypeKey
 
-        return NotImplemented
+        genotypes = self.metadata.get('genotypes', {})
+        if cb not in genotypes:
+            raise ValueError(
+                f"PredictionRecords metadata['genotypes'] is missing sample {cb!r}"
+            )
+
+        genotype = GenotypeKey.from_any(genotypes[cb])
+        genotype_keys = []
+        for label in labels:
+            mapped = tuple(genotype.founders[hap] for hap in label)
+            pos_tree = mapped[0] if len(mapped) == 1 else mapped
+            genotype_keys.append(GenotypeKey(pos_tree))
+        return tuple(genotype_keys)
+
+    def get_haplotype_labels(self, cb, chrom, as_genotype_keys=False):
+        arr = self[cb, chrom]
+        labels = []
+
+        if self.experiment_params.crossing_strategy == 'f2':
+            if self._ndim != 1:
+                raise ValueError(
+                    'F2 PredictionRecords are expected to be scalar haplotype-1 dosages'
+                )
+            for p in arr:
+                if p < 0.5:
+                    labels.append((0, 0))
+                elif p > 1.5:
+                    labels.append((1, 1))
+                else:
+                    labels.append((0, 1))
+        else:
+            groups = self._haplotype_groups_by_meiosis()
+            dosage = self.get_haplotype_dosage(cb, chrom)
+            for row in dosage:
+                labels.append(
+                    tuple(max(group, key=lambda hap: row[hap]) for group in groups)
+                )
+
+        labels = tuple(labels)
+        if as_genotype_keys:
+            return self._haplotype_labels_to_genotype_keys(cb, labels)
+        return labels
 
 
     def to_frame(self, cb_whitelist=None, dtype=None):
@@ -1018,29 +1063,70 @@ class PredictionRecords(BaseRecords):
         if self._ndim == 1:
             return pd.Series(series, index=cb_whitelist, name=f'{chrom}:{pos:d}')
         else:
-            states = self.experiment_params.haplotype_states
-            return pd.DataFrame(series, index=cb_whitelist, columns=states)
+            return pd.DataFrame(
+                series,
+                index=cb_whitelist,
+                columns=range(self.experiment_params.n_haplotypes),
+            )
 
     def to_json(self, precision: int = 5):
         return super().to_json(precision, encode_method='full')
 
-    def write_bed(self, fn, precision: int = 2):
-        if self._ndim != 1:
-            raise NotImplementedError("write_bed only supports scalar PredictionRecords")
+    BED_HAPLOTYPE_PALETTE = ('#0072b2', '#d55e00', '#009e73', '#f0e442')
+
+    @staticmethod
+    def _hex_to_rgb(hex_color):
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) != 6:
+            raise ValueError(f'Invalid hex color {hex_color!r}')
+        return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+    @classmethod
+    def _bed_palette_rgb(cls, idx, palette=None):
+        if palette is None:
+            palette = cls.BED_HAPLOTYPE_PALETTE
+        return ','.join(map(str, cls._hex_to_rgb(palette[idx % len(palette)])))
+
+    def _bed_haplotype_state_colors(self, palette=None):
+        colors = {}
+        for state in self.experiment_params.haplotype_states:
+            state = tuple(state)
+            if state not in colors:
+                colors[state] = self._bed_palette_rgb(len(colors), palette=palette)
+        return colors
+
+    def _bed_haplotype_names(self, cb, haplotypes):
+        genotypes = self.metadata.get('genotypes', {})
+        if cb not in genotypes:
+            return tuple(str(hap) for hap in haplotypes)
+
+        from coelsch.experiment.genotypes import GenotypeKey
+        genotype = GenotypeKey.from_any(genotypes[cb])
+        return tuple(str(genotype.founders[hap]) for hap in haplotypes)
+
+    def write_bed(self, fn, precision: int = 2, palette=None):
         invs = []
         bs = self.bin_size
+        colors = self._bed_haplotype_state_colors(palette=palette)
         for chrom, cs in self.chrom_sizes.items():
             for cb in self.barcodes:
-                p = np.round(self[cb, chrom], decimals=precision)
+                labels = self.get_haplotype_labels(cb, chrom)
                 i = 0
-                iv = p[0]
-                for j, jv in enumerate(p[1:], 1):
+                iv = labels[0]
+                for j, jv in enumerate(labels[1:], 1):
                     if iv != jv:
                         invs.append((chrom, i * bs, j * bs, cb, iv))
                         i = j
                         iv = jv
                 invs.append((chrom, i * bs, cs, cb, iv))
+
         invs.sort()
         with open(fn, 'w') as f:
-            for chrom, start, end, cb, score in invs:
-                f.write(f'{chrom}\t{start:d}\t{end:d}\t{cb}\t{score:.{precision}f}\t.\n')
+            for chrom, start, end, cb, haplotypes in invs:
+                haplotype_names = self._bed_haplotype_names(cb, haplotypes)
+                name = f'{cb}|{",".join(haplotype_names)}'
+                item_rgb = colors.get(tuple(haplotypes), self._bed_palette_rgb(0, palette=palette))
+                f.write(
+                    f'{chrom}\t{start:d}\t{end:d}\t{name}\t.\t.\t'
+                    f'{start:d}\t{end:d}\t{item_rgb}\n'
+                )

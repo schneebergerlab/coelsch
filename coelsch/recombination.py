@@ -406,6 +406,8 @@ def coefficient_of_coincidence(co_preds, nboots=100, min_dist=None, max_dist=Non
         sample = defaultdict(list)
         for cb, s in zip(cb_sample, samp_idx):
             for chrom in chroms:
+                # TODO: CoC currently pools crossover positions across meioses and ignores sign.
+                # For multi-meiosis designs this should probably be calculated per meiosis.
                 sample[chrom].append(co_pos_samples[cb, chrom, s, :, 0])
         mids, coc, Lint = _coc_curve_sample(sample, bins, max_dist, only_adjacent=only_adjacent, rng=rng)
         for chrom in chroms:

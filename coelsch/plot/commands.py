@@ -14,6 +14,7 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
              cb_whitelist_fn=None, plot_type='markerplot', figsize=(18, 4), display_plot=False,
              show_pred=True, show_co_num=True, show_gt=True, max_yheight=20,
              window_size=1_000_000, nboots=100, confidence_intervals=95,
+             nco_min_prob_change=2.5e-3,
              ref_colour='#0072b2', alt_colour='#d55e00', rng=DEFAULT_RNG):
     """
     Generate and save a plot for the given cell barcode and crossover marker data.
@@ -54,6 +55,8 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
         The number of bootstrap iterations for calculating confidence intervals in recombination landscapes. Default is 100.
     confidence_intervals : int, optional
         The confidence interval percentage for recombination landscape plots. Default is 95.
+    nco_min_prob_change : float, optional
+        Minimum probability change for crossover annotations and recombination landscapes.
     ref_colour : str, optional
         The color for the reference allele in the plot. Default is '#0072b2'.
     alt_colour : str, optional

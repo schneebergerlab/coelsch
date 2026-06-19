@@ -502,6 +502,13 @@ class RigidHMM:
 
     @classmethod
     def from_params(cls, params, device=DEFAULT_DEVICE):
+        if params.get('is_independent_meioses'):
+            msg = (
+                'These parameters describe an IndependentMeiosesHMM; use '
+                'IndependentMeiosesHMM.from_params instead of RigidHMM.from_params'
+            )
+            log.warning(msg)
+            raise ValueError(msg)
         if params['is_poisson']:
             fg_params = {
                 'lambda': params['fg_lambda'],

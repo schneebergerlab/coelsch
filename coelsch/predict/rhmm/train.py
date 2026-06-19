@@ -3,6 +3,7 @@ import numpy as np
 import torch
 
 from .model import RigidHMM
+from .independent import IndependentMeiosesHMM
 from .estimate import estimate_emissions
 from .utils import mask_array_zeros
 
@@ -21,7 +22,8 @@ def _calculate_co_shrinkage(co_markers, min_shrink=0.15):
 
 def train_rhmm(co_markers, cm_per_mb=4.5,
                segment_size=1_000_000, terminal_segment_size=50_000, interference_half_life=100_000,
-               dist_type='poisson', mask_empty_bins=True, device=DEFAULT_DEVICE):
+               dist_type='poisson', mask_empty_bins=True, independent_meioses='auto',
+               device=DEFAULT_DEVICE):
     """
     Constructs a RigidHMM instance and fits it to the crossover marker data.
 
@@ -67,10 +69,24 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
             X_chrom = co_markers[:, chrom].stack_values()
             X += [m for m in mask_array_zeros(X_chrom, axis=1)]
 
-    states = co_markers.experiment_params.haplotype_states
+    params = co_markers.experiment_params
+    if independent_meioses == 'auto':
+        independent_meioses = (
+            params.crossing_strategy == 'four_way'
+            and params.genotyping_strategy == 'founder'
+        )
+    if independent_meioses and not (
+        params.crossing_strategy == 'four_way'
+        and params.genotyping_strategy == 'founder'
+    ):
+        raise ValueError(
+            'independent_meioses is only supported for four_way founder designs'
+        )
+
+    states = params.haplotype_states
     n_haplotypes = co_markers.n_haplotypes
     fg_params, bg_params = estimate_emissions(
-        X, co_markers.experiment_params, rfactor, dist_type=dist_type
+        X, params, rfactor, dist_type=dist_type
     )
 
     def format_params(params, indent=2):
@@ -83,6 +99,21 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
         f"Foreground:\n{format_params(fg_params)}\n"
         f"Background:\n{format_params(bg_params)}"
     )
+
+    if independent_meioses:
+        haploid_hmm = RigidHMM(
+            states=((0,), (1,)),
+            n_haplotypes=2,
+            rfactor=rfactor,
+            term_rfactor=term_rfactor,
+            trans_prob=trans_prob,
+            fg_params=fg_params,
+            bg_params=bg_params,
+            dist_type=dist_type,
+            trans_prob_decay_rate=trans_prob_decay_rate,
+            device=device
+        )
+        return IndependentMeiosesHMM(haploid_hmm)
 
     return RigidHMM(
         states=states,

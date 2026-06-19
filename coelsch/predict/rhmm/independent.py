@@ -125,7 +125,16 @@ class IndependentMeiosesHMM:
             'ploidy': float(self.ploidy),
             'meioses': [list(meiosis) for meiosis in self.meioses],
         }
-        params.update({f'haploid_{key}': value for key, value in self.haploid_hmm.params.items()})
+        haploid_params = self.haploid_hmm.params
+        for key in (
+            'rfactor',
+            'term_rfactor',
+            'trans_prob',
+            'trans_prob_decay_rate',
+            'is_poisson',
+        ):
+            params[key] = haploid_params[key]
+        params.update({f'haploid_{key}': value for key, value in haploid_params.items()})
         return params
 
     @classmethod

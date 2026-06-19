@@ -121,9 +121,9 @@ def recombination_landscape(co_preds,
 
     Returns
     -------
-    dict
-        A dictionary where the keys are chromosome names and the values are arrays of recombination
-        rates per megabase, calculated from bootstrapped samples.
+    NestedDataArray
+        Nested recombination-rate arrays keyed by group, scalar haplotype track, and chromosome.
+        Each leaf has shape ``(nboots, nbins)`` and contains cM/Mb estimates.
 
     Raises
     ------
@@ -141,24 +141,10 @@ def recombination_landscape(co_preds,
     else:
         denominators = None
 
-    cm_per_mb = NestedDataArray(levels=('genotype', 'chrom',))
+    cm_per_mb = NestedDataArray(levels=('genotype', 'track', 'chrom',))
     for geno, geno_co_preds in co_preds.groupby(apply_by):
         N = len(geno_co_preds)
         for chrom, nbins in geno_co_preds.nbins.items():
-            chrom_hap_probs = geno_co_preds[:, chrom].stack_values()
-            chrom_co_probs = np.abs(np.diff(
-                chrom_hap_probs,
-                n=1,
-                axis=1,
-                prepend=chrom_hap_probs[:, 0].reshape(-1, 1)
-            ))
-            # filter gradients smaller than min_prob
-            chrom_co_probs = np.where(
-                chrom_co_probs >= min_prob, chrom_co_probs, 0
-            )
-            if co_preds.ploidy_type.startswith('diploid'):
-                chrom_co_probs *= 2
-            # filter gradients where there are no markers
             if denominators is not None:
                 chrom_denom = denominators[geno, chrom]
                 chrom_denom = convolve1d(
@@ -167,28 +153,40 @@ def recombination_landscape(co_preds,
                     mode='constant',
                     cval=0
                 )
-                chrom_co_probs = np.where(
-                    chrom_denom > 0,
-                    chrom_co_probs,
-                    0,
-                )
             else:
                 chrom_denom = np.ones(shape=(N, nbins))
-            # equivalent to rolling sum accounting for edge effects
-            chrom_co_probs = convolve1d(
-                chrom_co_probs, filt,
-                axis=1,
-                mode='constant',
-                cval=0
-            ) * nf
-            chrom_cm_per_mb = []
-            for _ in range(nboots):
-                idx = rng.integers(0, N, size=N)
-                chrom_cm_per_mb.append(
-                    (chrom_co_probs[idx].sum(axis=0) / chrom_denom[idx].sum(axis=0)) * 100
+
+            for track_label, chrom_hap_probs in geno_co_preds.iter_scalar_haplotypes(chrom):
+                track_key = track_label or 'haplotype'
+                chrom_co_probs = np.abs(np.diff(
+                    chrom_hap_probs,
+                    n=1,
+                    axis=1,
+                    prepend=chrom_hap_probs[:, 0].reshape(-1, 1)
+                ))
+                chrom_co_probs = np.where(
+                    chrom_co_probs >= min_prob, chrom_co_probs, 0
                 )
-            cm_per_mb[geno, chrom] = np.stack(chrom_cm_per_mb)
-    co_preds.add_metadata(recombination_landscape=cm_per_mb)
+                if denominators is not None:
+                    chrom_co_probs = np.where(
+                        chrom_denom > 0,
+                        chrom_co_probs,
+                        0,
+                    )
+                # equivalent to rolling sum accounting for edge effects
+                chrom_co_probs = convolve1d(
+                    chrom_co_probs, filt,
+                    axis=1,
+                    mode='constant',
+                    cval=0
+                ) * nf
+                chrom_cm_per_mb = []
+                for _ in range(nboots):
+                    idx = rng.integers(0, N, size=N)
+                    chrom_cm_per_mb.append(
+                        (chrom_co_probs[idx].sum(axis=0) / chrom_denom[idx].sum(axis=0)) * 100
+                    )
+                cm_per_mb[geno, track_key, chrom] = np.stack(chrom_cm_per_mb)
     return cm_per_mb
 
 

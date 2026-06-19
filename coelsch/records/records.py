@@ -953,6 +953,46 @@ class PredictionRecords(BaseRecords):
             return np.stack([self.experiment_params.ploidy - arr, arr], axis=1)
         return arr
 
+    def iter_scalar_haplotypes(self, chrom):
+        params = self.experiment_params
+        haps = self[:, chrom].stack_values()
+
+        def require_matrix(strategy):
+            if haps.ndim != 3:
+                raise ValueError(
+                    f'{strategy} scalar haplotypes require multichannel PredictionRecords'
+                )
+
+        if params.genotyping_strategy == 'recombinant' or params.crossing_strategy in {'f1', 'f2', 'backcross'}:
+            if haps.ndim == 2:
+                yield None, haps
+            elif haps.ndim == 3 and haps.shape[2] > 1:
+                yield None, haps[:, :, 1]
+            else:
+                raise ValueError('scalar haplotypes require scalar records or channel 1')
+            return
+
+        if params.crossing_strategy == 'testcross':
+            require_matrix('testcross')
+            yield 'parent2', haps[:, :, 2]
+            return
+
+        if params.crossing_strategy == 'three_way':
+            require_matrix('three_way')
+            yield 'parent1', haps[:, :, 1]
+            yield 'parent2', haps[:, :, 2]
+            return
+
+        if params.crossing_strategy == 'four_way':
+            require_matrix('four_way')
+            yield 'parent1', haps[:, :, 1]
+            yield 'parent2', haps[:, :, 3]
+            return
+
+        raise NotImplementedError(
+            f'scalar haplotypes are not implemented for {params.crossing_strategy!r}'
+        )
+
     def _haplotype_labels_to_genotype_keys(self, cb, labels):
         from coelsch.experiment.genotypes import GenotypeKey
 

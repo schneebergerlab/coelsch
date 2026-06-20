@@ -435,15 +435,13 @@ class GenotypeKey:
 
     @classmethod
     def _ordered_founders(cls, node, role_map=None):
-        if role_map is None:
-            role_map = {}
-        leaves = cls._leaves(node)
-        counts = {hap: leaves.count(hap) for hap in set(leaves)}
-        sex_priority = cls._founder_sex_priority(node, role_map)
-        return tuple(sorted(
-            counts,
-            key=lambda hap: (-counts[hap], sex_priority.get(hap, 2), str(hap)),
-        ))
+        founders = []
+        seen = set()
+        for hap in cls._leaves(node):
+            if hap not in seen:
+                founders.append(hap)
+                seen.add(hap)
+        return tuple(founders)
 
     @classmethod
     def _depth(cls, node):

@@ -39,7 +39,13 @@ class IndependentMeiosesHMM:
         self.ploidy = len(self.meioses)
 
     def _meiosis_array(self, X, meiosis_idx):
-        return X[:, :, self.meioses[meiosis_idx]]
+        arr = X[:, :, self.meioses[meiosis_idx]]
+        if isinstance(arr, np.ma.MaskedArray):
+            return np.ma.array(
+                np.ascontiguousarray(arr.data),
+                mask=np.ascontiguousarray(np.ma.getmaskarray(arr)),
+            )
+        return np.ascontiguousarray(arr)
 
     def _validate_input(self, X):
         if X.ndim != 3:

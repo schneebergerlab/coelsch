@@ -16,6 +16,7 @@ class ExperimentParams:
     crossing_strategy: str
     sequencing_type: str
     genotyping_strategy: str = "founder"
+    sample_unit: str = "auto"
 
     VALID_LIFECYCLE_STAGES = frozenset({"gametes", "progeny"})
     VALID_CROSSING_STRATEGIES = frozenset({
@@ -34,12 +35,25 @@ class ExperimentParams:
         "founder",
         "recombinant",
     })
+    VALID_SAMPLE_UNITS = frozenset({
+        "auto",
+        "single_cell",
+        "bulk",
+    })
+    SINGLE_CELL_SEQUENCING_TYPES = frozenset({
+        "10x_rna",
+        "10x_atac",
+        "bd_rna",
+        "bd_atac",
+        "takara_dna",
+    })
 
     def __post_init__(self):
         lifecycle_stage = self.lifecycle_stage.lower()
         crossing_strategy = self.crossing_strategy.lower()
         sequencing_type = self.sequencing_type.lower()
         genotyping_strategy = self.genotyping_strategy.lower()
+        sample_unit = self.sample_unit.lower()
 
         self._validate_choice(
             "lifecycle_stage",
@@ -61,11 +75,18 @@ class ExperimentParams:
             genotyping_strategy,
             self.VALID_GENOTYPING_STRATEGIES,
         )
+        self._validate_choice(
+            "sample_unit",
+            sample_unit,
+            self.VALID_SAMPLE_UNITS,
+        )
+        sample_unit = self._resolve_sample_unit(sample_unit, sequencing_type)
 
         object.__setattr__(self, "lifecycle_stage", lifecycle_stage)
         object.__setattr__(self, "crossing_strategy", crossing_strategy)
         object.__setattr__(self, "sequencing_type", sequencing_type)
         object.__setattr__(self, "genotyping_strategy", genotyping_strategy)
+        object.__setattr__(self, "sample_unit", sample_unit)
 
         self.check_sane()
 
@@ -119,6 +140,18 @@ class ExperimentParams:
             raise ValueError(
                 f"Unsupported {name} {value!r}; expected one of {sorted(valid)}"
             )
+
+    @classmethod
+    def _resolve_sample_unit(cls, sample_unit, sequencing_type):
+        if sample_unit != "auto":
+            return sample_unit
+        if sequencing_type in cls.SINGLE_CELL_SEQUENCING_TYPES:
+            return "single_cell"
+        return "bulk"
+
+    @property
+    def supports_doublet_detection(self):
+        return self.sample_unit == "single_cell"
 
     @property
     def ploidy(self):
@@ -296,7 +329,8 @@ class ExperimentParams:
             'lifecycle_stage': self.lifecycle_stage,
             'crossing_strategy': self.crossing_strategy,
             'sequencing_type': self.sequencing_type,
-            'genotyping_strategy': self.genotyping_strategy
+            'genotyping_strategy': self.genotyping_strategy,
+            'sample_unit': self.sample_unit,
         }
 
     @classmethod
@@ -312,7 +346,8 @@ class ExperimentParams:
             lifecycle_stage=lifecycle_stage,
             crossing_strategy=obj['crossing_strategy'],
             sequencing_type=obj['sequencing_type'],
-            genotyping_strategy=obj.get('genotyping_strategy', 'founder')
+            genotyping_strategy=obj.get('genotyping_strategy', 'founder'),
+            sample_unit=obj.get('sample_unit', 'auto'),
         )
 
     @classmethod

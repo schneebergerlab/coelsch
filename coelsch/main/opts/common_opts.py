@@ -28,6 +28,16 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--sample-unit',
+    required=False,
+    subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
+    type=click.Choice(['auto', 'single_cell', 'bulk'], case_sensitive=False),
+    default='auto',
+    help='sampling unit represented by each barcode/sample; auto infers from --seq-type'
+)
+
+
+coelsch_opts.option(
     '--lifecycle-stage',
     required=False,
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],

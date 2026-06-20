@@ -10,7 +10,7 @@ from .utils import get_all_haplotypes_bam, get_all_haplotypes_vcf
 
 def create_experimental_design(
     lifecycle_stage, crossing_strategy, sequencing_type,
-    genotyping_strategy, crossing_combinations=None,
+    genotyping_strategy, sample_unit="auto", crossing_combinations=None,
     recombinant_parental_haplotypes=None,
     all_haplotypes=None, bam_fn=None, vcf_fn=None, ref_name=None,
     has_named_haplotypes=True,
@@ -20,6 +20,7 @@ def create_experimental_design(
         crossing_strategy=crossing_strategy,
         sequencing_type=sequencing_type,
         genotyping_strategy=genotyping_strategy,
+        sample_unit=sample_unit,
     )
 
     if not has_named_haplotypes:

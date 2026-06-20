@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import torch
 
-from .rhmm import train_rhmm, RigidHMM
+from .rhmm import train_rhmm, RigidHMM, IndependentMeiosesHMM
 from .crossovers import detect_crossovers
 from .doublet import detect_doublets
 
@@ -91,13 +91,12 @@ def run_predict(marker_json_fn, output_json_fn, *,
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
 
-    is_multihaplotype = co_markers.experiment_params.n_haplotypes > 2
-    if is_multihaplotype:
-        if predict_doublets:
-            raise NotImplementedError(
-                'Doublet prediction is not yet implemented for multi-haplotype PredictionRecords; '
-                'rerun with --no-predict-doublets'
-            )
+    if predict_doublets and not co_markers.experiment_params.supports_doublet_detection:
+        log.info(
+            'Skipping doublet prediction for sample_unit=%r',
+            co_markers.experiment_params.sample_unit,
+        )
+        predict_doublets = False
 
     rhmm = train_rhmm(
         co_markers,
@@ -185,7 +184,16 @@ def run_doublet(marker_json_fn, pred_json_fn, output_json_fn, *,
     if set(co_preds.barcodes) != set(co_markers.barcodes):
         raise ValueError('Cell barcodes from marker-json-fn and predict-json-fn do not match')
 
-    rhmm = RigidHMM.from_params(co_preds.metadata['rhmm_params'], device=device)
+    if not co_preds.experiment_params.supports_doublet_detection:
+        raise ValueError(
+            "Doublet prediction only supports sample_unit='single_cell'"
+        )
+
+    rhmm_params = co_preds.metadata['rhmm_params']
+    if rhmm_params.get('is_independent_meioses'):
+        rhmm = IndependentMeiosesHMM.from_params(rhmm_params, device=device)
+    else:
+        rhmm = RigidHMM.from_params(rhmm_params, device=device)
 
     co_preds = detect_doublets(
         co_markers, co_preds, rhmm, n_doublets=n_doublets,

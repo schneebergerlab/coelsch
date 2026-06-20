@@ -437,6 +437,42 @@ def gt_detectable_crossovers(cb_co_markers, cb_co_gt):
     return dcos
 
 
+def _nanmean(values):
+    values = np.asarray(values, dtype=float)
+    if values.size == 0 or np.isnan(values).all():
+        return np.nan
+    return np.nanmean(values)
+
+
+def co_sample_assignment_metrics(cb_co_assignments, bin_size):
+
+    precision = []
+    recall = []
+    fdr = []
+    matched_distances = []
+    for _, sample in cb_co_assignments.deep_items():
+
+        has_gt = np.isfinite(sample[:, 0])
+        has_pred = np.isfinite(sample[:, 1])
+        matched = has_gt & has_pred
+        n_gt = has_gt.sum()
+        n_pred = has_pred.sum()
+        n_matched = matched.sum()
+
+        precision.append(np.nan if n_pred == 0 else n_matched / n_pred)
+        recall.append(np.nan if n_gt == 0 else n_matched / n_gt)
+        fdr.append(np.nan if n_pred == 0 else (n_pred - n_matched) / n_pred)
+        if n_matched:
+            matched_distances.append(sample[matched, 4])
+
+    if matched_distances:
+        mean_distance_bp = np.concatenate(matched_distances).mean() * bin_size
+    else:
+        mean_distance_bp = np.nan
+
+    return _nanmean(precision), _nanmean(recall), _nanmean(fdr), mean_distance_bp
+
+
 def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred_score=10):
     """
     Calculates ground-truth benchmarking metrics for each cell barcode.
@@ -457,48 +493,54 @@ def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred
     pd.DataFrame
         A DataFrame containing the calculated ground-truth metrics for each cell barcode.
     """
+    co_sample_gt_assignment = co_preds.metadata.get('co_sample_gt_assignment')
+    columns = [
+        'cb', 'gt_n_crossovers', 'gt_detectable_crossovers',
+        'gt_haplotype_mae_score', 'gt_crossover_precision', 'gt_crossover_recall',
+    ]
+    if co_sample_gt_assignment is not None:
+        columns += [
+            'gt_sample_co_precision', 'gt_sample_co_recall',
+            'gt_sample_co_fdr', 'gt_sample_co_mean_distance_bp'
+        ]
+
     score_metrics = []
     for cb, cb_co_preds in co_preds.items():
+        if cb.startswith('doublet'):
+            score_metrics.append([cb] + [np.nan] * (len(columns) - 1))
+            continue
+
         cb_co_markers = co_markers[cb]
-        if not cb.startswith('doublet'):
-            cb_co_gt = ground_truth[cb]
-            cb_co_pred_dosage = {
-                chrom: co_preds.get_haplotype_dosage(cb, chrom)
-                for chrom in co_preds.chrom_sizes
-            }
-            cb_co_gt_dosage = {
-                chrom: ground_truth.get_haplotype_dosage(cb, chrom)
-                for chrom in ground_truth.chrom_sizes
-            }
-            gt_co_precision, gt_co_recall = gt_crossover_precision_recall(
-                cb_co_pred_dosage,
-                cb_co_gt_dosage,
+        cb_co_pred_dosage = {
+            chrom: co_preds.get_haplotype_dosage(cb, chrom)
+            for chrom in co_preds.chrom_sizes
+        }
+        cb_co_gt_dosage = {
+            chrom: ground_truth.get_haplotype_dosage(cb, chrom)
+            for chrom in ground_truth.chrom_sizes
+        }
+        gt_co_precision, gt_co_recall = gt_crossover_precision_recall(
+            cb_co_pred_dosage,
+            cb_co_gt_dosage,
+        )
+        row = [
+            cb,
+            n_crossovers(cb_co_gt_dosage),
+            gt_detectable_crossovers(cb_co_markers, cb_co_gt_dosage),
+            gt_haplotype_mae_score(
+                cb_co_pred_dosage, cb_co_gt_dosage, max_score=max_phred_score
+            ),
+            gt_co_precision,
+            gt_co_recall,
+        ]
+        if co_sample_gt_assignment is not None:
+            row += co_sample_assignment_metrics(
+                co_sample_gt_assignment[cb],
+                co_preds.bin_size,
             )
-            score_metrics.append([
-                cb,
-                int(n_crossovers(cb_co_gt_dosage)),
-                gt_detectable_crossovers(cb_co_markers, cb_co_gt_dosage),
-                gt_haplotype_mae_score(
-                    cb_co_pred_dosage, cb_co_gt_dosage, max_score=max_phred_score
-                ),
-                gt_haplotype_mae_score(
-                    cb_co_pred_dosage, cb_co_gt_dosage,
-                    thresholded=True, max_score=max_phred_score
-                ),
-                gt_co_precision,
-                gt_co_recall,
-            ])
-        else:
-            score_metrics.append([
-                cb, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
-            ])
-    score_metrics = pd.DataFrame(
-        score_metrics,
-        columns=['cb', 'gt_n_crossovers', 'gt_detectable_crossovers',
-                 'gt_haplotype_mae_score', 'gt_hardcall_haplotype_mae_score',
-                 'gt_crossover_precision', 'gt_crossover_recall']
-    )
-    return score_metrics
+        score_metrics.append(row)
+
+    return pd.DataFrame(score_metrics, columns=columns)
 
 
 def _ground_truth_from_marker_records(co_markers):

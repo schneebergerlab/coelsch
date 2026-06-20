@@ -195,7 +195,8 @@ def _assignment_rows(gt_events, pred_events, max_dist):
     return np.asarray(rows, dtype=float)
 
 
-def assign_co_samples_to_gt(co_samples, ground_truth, max_dist=5_000_000 // 25_000,
+# TODO: expose max_dist in cli in bases and convert at the same time as o other genomic distances
+def assign_co_samples_to_gt(co_samples, ground_truth, max_dist=200,
                             ploidy=None, experiment_params=None):
     """
     Assign sampled crossover events to ground-truth crossover events.

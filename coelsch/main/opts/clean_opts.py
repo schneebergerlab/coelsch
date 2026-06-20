@@ -92,6 +92,19 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--target-crossing-strategy',
+    subcommands=['sim'],
+    required=False,
+    type=click.Choice(
+        ['f2', 'backcross', 'testcross', 'three_way', 'four_way'],
+        case_sensitive=False,
+    ),
+    default=None,
+    help='Optional crossing strategy to simulate by pooling compatible source channels.'
+)
+
+
+coelsch_opts.option(
     '--min-markers-per-cb',
     subcommands=['loadbam', 'loadcsl', 'clean', 'sim', 'bam2pred', 'csl2pred'],
     required=False,

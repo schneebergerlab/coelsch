@@ -1,5 +1,6 @@
 import os
 import logging
+from copy import deepcopy
 import numpy as np
 import pandas as pd
 
@@ -115,6 +116,176 @@ def _validate_ground_truth_compatibility(co_markers, ground_truth):
     if co_markers.bin_size != ground_truth.bin_size:
         raise ValueError('Source markers and ground truth bin sizes do not match')
 
+
+
+GENOTYPING_METADATA_KEYS = {
+    'genotypes',
+    'genotype_probability',
+    'genotype_error_rates',
+    'genotype_scores',
+}
+
+CROSSING_STRATEGY_POOLINGS = {
+    ('four_way', 'three_way'): (
+        ((0, 2), (1,), (3,)),
+        ((0, 3), (1,), (2,)),
+        ((1, 2), (0,), (3,)),
+        ((1, 3), (0,), (2,)),
+    ),
+    ('four_way', 'testcross'): (
+        ((0, 1), (2,), (3,)),
+        ((2, 3), (0,), (1,)),
+    ),
+    ('four_way', 'backcross'): (
+        ((0, 1, 2), (3,)),
+        ((0, 1, 3), (2,)),
+        ((0, 2, 3), (1,)),
+        ((1, 2, 3), (0,)),
+    ),
+    ('four_way', 'f2'): (
+        ((0, 2), (1, 3)),
+        ((0, 3), (1, 2)),
+    ),
+    ('four_way', 'f1'): (
+        ((0, 1), (2, 3)),
+    ),
+    ('three_way', 'backcross'): (
+        ((0, 1), (2,)),
+        ((0, 2), (1,)),
+    ),
+    ('three_way', 'f2'): (
+        ((0,), (1, 2)),
+    ),
+    ('testcross', 'backcross'): (
+        ((0, 1), (2,)),
+        ((0, 2), (1,)),
+    ),
+    ('testcross', 'f1'): (
+        ((0,), (1, 2)),
+    ),
+}
+
+
+def _pool_haplotype_array(arr, pools):
+    pooled = np.zeros((arr.shape[0], len(pools)), dtype=arr.dtype)
+    for i, cols in enumerate(pools):
+        pooled[:, i] = arr[:, cols].sum(axis=1)
+    return pooled
+
+
+def _copy_non_genotyping_metadata(metadata):
+    if metadata is None:
+        return None
+    return {
+        key: deepcopy(value)
+        for key, value in metadata.items()
+        if key not in GENOTYPING_METADATA_KEYS
+    }
+
+
+def _pooled_experiment_params(source_params, target_crossing_strategy):
+    return ExperimentParams(
+        lifecycle_stage=source_params.lifecycle_stage,
+        crossing_strategy=target_crossing_strategy,
+        sequencing_type=source_params.sequencing_type,
+        genotyping_strategy=source_params.genotyping_strategy,
+        sample_unit=source_params.sample_unit,
+    )
+
+
+def select_crossing_strategy_pooling(source_crossing_strategy, target_crossing_strategy,
+                                     rng=DEFAULT_RNG):
+    """
+    Select one channel-pooling scheme for a source/target crossing-strategy pair.
+    """
+    if source_crossing_strategy == target_crossing_strategy:
+        return None
+
+    key = (source_crossing_strategy, target_crossing_strategy)
+    if key not in CROSSING_STRATEGY_POOLINGS:
+        raise ValueError(
+            f"Cannot pool crossing_strategy={source_crossing_strategy!r} "
+            f"to {target_crossing_strategy!r}"
+        )
+
+    poolings = CROSSING_STRATEGY_POOLINGS[key]
+    return poolings[int(rng.integers(len(poolings)))]
+
+
+def apply_crossing_strategy_pooling(record, target_crossing_strategy, pools):
+    """
+    Apply a selected crossing-strategy pooling to MarkerRecords or PredictionRecords.
+    """
+    if not isinstance(record, (MarkerRecords, PredictionRecords)):
+        raise TypeError('record must be a MarkerRecords or PredictionRecords object')
+
+    if pools is None:
+        pooled_record = record.copy()
+        pooled_record.metadata = _copy_non_genotyping_metadata(pooled_record.metadata)
+        return pooled_record
+
+    target_params = _pooled_experiment_params(record.experiment_params, target_crossing_strategy)
+    record_cls = type(record)
+    pooled_record = record_cls(
+        record.chrom_sizes,
+        record.bin_size,
+        target_params,
+        metadata=_copy_non_genotyping_metadata(record.metadata),
+        frozen=record.frozen,
+    )
+
+    for cb, chrom, arr in record.deep_items():
+        if isinstance(record, PredictionRecords):
+            arr = record.get_haplotype_dosage(cb, chrom)
+        pooled = _pool_haplotype_array(arr, pools)
+        if isinstance(pooled_record, PredictionRecords) and pooled_record._ndim == 1:
+            pooled_record[cb, chrom] = pooled[:, 1]
+        else:
+            pooled_record[cb, chrom] = pooled
+    return pooled_record
+
+
+def simulate_crossing_strategy(record, target_crossing_strategy, rng=DEFAULT_RNG):
+    """
+    Pool haplotype channels to simulate a simpler crossing strategy.
+
+    A single compatible pooling scheme is selected once per call and applied to all
+    barcodes, preserving depth, chromosome structure, and non-genotyping metadata.
+    """
+    pools = select_crossing_strategy_pooling(
+        record.experiment_params.crossing_strategy,
+        target_crossing_strategy,
+        rng=rng,
+    )
+    return apply_crossing_strategy_pooling(record, target_crossing_strategy, pools)
+
+
+def align_sim_crossing_strategy(co_markers, co_preds, ground_truth,
+                                target_crossing_strategy=None, rng=DEFAULT_RNG):
+    """
+    Align simulation inputs to one compatible crossing strategy.
+
+    If ``target_crossing_strategy`` is omitted, source markers and predictions are
+    pooled to the ground-truth strategy. If it is provided, all three records are
+    pooled to that strategy. Records with the same source/target pair reuse the
+    same randomly selected pooling.
+    """
+    target = target_crossing_strategy or ground_truth.experiment_params.crossing_strategy
+    selected_poolings = {}
+
+    def get_pools(record):
+        source = record.experiment_params.crossing_strategy
+        key = (source, target)
+        if key not in selected_poolings:
+            selected_poolings[key] = select_crossing_strategy_pooling(source, target, rng=rng)
+        return selected_poolings[key]
+
+    co_markers = apply_crossing_strategy_pooling(co_markers, target, get_pools(co_markers))
+    co_preds = apply_crossing_strategy_pooling(co_preds, target, get_pools(co_preds))
+    if target_crossing_strategy is not None:
+        ground_truth = apply_crossing_strategy_pooling(ground_truth, target, get_pools(ground_truth))
+
+    return co_markers, co_preds, ground_truth
 
 def apply_gt_dosage_to_markers(gt_dosage, m, noise_fraction, rng=DEFAULT_RNG):
     """
@@ -317,7 +488,7 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
             cb_whitelist_fn=None, bin_size=25_000,
             min_markers_per_cb=100, min_markers_per_chrom=20,
             noise_fraction=None, nsim_per_sample=100, n_doublets=0.0,
-            thresholded=True, rng=DEFAULT_RNG):
+            thresholded=True, target_crossing_strategy=None, rng=DEFAULT_RNG):
     """
     Run the full simulation pipeline to create synthetic marker data from ground truth.
 
@@ -347,6 +518,8 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
         Number or fraction of doublets to simulate.
     thresholded : bool, optional
         If True, round source predictions and target ground truth dosage before simulation.
+    target_crossing_strategy : str, optional
+        Crossing strategy to simulate. If omitted, source records are aligned to ground truth.
     rng : Generator, optional
         NumPy random generator.
 
@@ -372,6 +545,19 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
     else:
         ground_truth_haplotypes = PredictionRecords.read_json(ground_truth_fn)
     log.info(f'Read {len(ground_truth_haplotypes)} ground truth samples from {ground_truth_fn}')
+
+    co_markers, co_preds, ground_truth_haplotypes = align_sim_crossing_strategy(
+        co_markers,
+        co_preds,
+        ground_truth_haplotypes,
+        target_crossing_strategy=target_crossing_strategy,
+        rng=rng,
+    )
+    log.info(
+        'Simulating crossing_strategy=%s',
+        ground_truth_haplotypes.experiment_params.crossing_strategy,
+    )
+
     sim_co_markers = generate_simulated_data(
         co_markers,
         co_preds,

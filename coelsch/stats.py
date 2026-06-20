@@ -76,14 +76,32 @@ def _chrom_agreement(m, dosage):
     return agreement, total
 
 
-def marker_agreement_score(cb_co_markers, cb_co_preds, max_score=10, pseudo=0.5):
+def _marker_agreement_totals(cb_co_markers, cb_co_preds, thresholded=False):
     agreement = 0.0
     total = 0.0
 
     for chrom, m in cb_co_markers.items():
-        n, d = _chrom_agreement(m, cb_co_preds[chrom])
+        p = cb_co_preds[chrom]
+        if thresholded:
+            p = np.round(p)
+        n, d = _chrom_agreement(m, p)
         agreement += n
         total += d
+
+    return agreement, total
+
+
+def marker_agreement_fraction(cb_co_markers, cb_co_preds, thresholded=False):
+    agreement, total = _marker_agreement_totals(
+        cb_co_markers, cb_co_preds, thresholded=thresholded
+    )
+    if total <= 0:
+        return np.nan
+    return agreement / total
+
+
+def marker_agreement_score(cb_co_markers, cb_co_preds, max_score=10, pseudo=0.5):
+    agreement, total = _marker_agreement_totals(cb_co_markers, cb_co_preds)
 
     if total <= 0:
         return np.nan

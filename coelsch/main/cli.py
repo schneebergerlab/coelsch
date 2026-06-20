@@ -39,8 +39,8 @@ def loadcsl_subcommand(**kwargs):
 @coelsch_opts('sim')
 def sim_subcommand(**kwargs):
     '''
-    Simulate realistic haplotype marker distributions using real data from `load`,
-    with known haplotypes/crossovers supplied from a bed file.
+    Simulate realistic haplotype marker distributions using source marker/prediction data,
+    with known haplotypes/crossovers supplied from a prediction JSON or legacy F1 BED file.
     '''
     from coelsch.sim import run_sim
     run_sim(**kwargs)

@@ -21,19 +21,21 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
-    '--bg-marker-rate',
+    '--noise-fraction',
     subcommands=['sim'],
     required=False,
-    type=click.FloatRange(0.0, 0.49),
+    type=click.FloatRange(0.0, 0.99),
     default=None,
-    help=('set uniform background marker rate for simulations. '
-          'Default is to estimate per cell barcode from markers')
+    help=(
+        'Optional fixed fraction of markers to sample as uniform background noise. '
+        'Default is to estimate this per source barcode from marker/prediction agreement.'
+    )
 )
 
 
 coelsch_opts.option(
     '--bg-window-size',
-    subcommands=['sim', 'clean', 'bam2pred', 'csl2pred'],
+    subcommands=['clean', 'bam2pred', 'csl2pred'],
     required=False,
     type=click.IntRange(100_000, 10_000_000),
     default=2_500_000,

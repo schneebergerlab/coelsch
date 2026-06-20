@@ -46,7 +46,7 @@ coelsch_opts.argument(
 
 coelsch_opts.argument(
     'pred-json-fn',
-    subcommands=['doublet', 'stats', 'segdist'],
+    subcommands=['sim', 'doublet', 'stats', 'segdist'],
     required=True,
     nargs=1,
     type=_input_file_type,

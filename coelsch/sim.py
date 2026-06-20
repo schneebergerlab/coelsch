@@ -1,17 +1,14 @@
 import os
 import logging
-from collections import defaultdict
-from functools import partial
-
 import numpy as np
 import pandas as pd
 
 from coelsch.utils import load_json
 from coelsch.records import MarkerRecords, PredictionRecords, NestedDataArray
+from coelsch.experiment.params import ExperimentParams
 from coelsch.clean.filter import filter_low_coverage_barcodes
-from coelsch.clean.background import estimate_overall_background_signal
-from coelsch.signal import smooth_counts_sum
 from coelsch.defaults import DEFAULT_RANDOM_SEED
+from coelsch.stats import marker_agreement_fraction
 
 
 log = logging.getLogger('coelsch')
@@ -56,60 +53,28 @@ def co_invs_to_gt(co_invs, bin_size, chrom_nbins):
 
 def read_ground_truth_haplotypes_bed(co_invs_fn, chrom_sizes, bin_size=25_000):
     """
-    Read a BED file containing haplotype intervals and convert to binned binary arrays.
-
-    Parameters
-    ----------
-    co_invs_fn : str
-        Path to BED file.
-    chrom_sizes : dict
-        Dictionary mapping chromosome names to their lengths.
-    bin_size : int, optional
-        Size of genomic bins. Default is 25,000.
-
-    Returns
-    -------
-    gt : PredictionRecords
-        PredictionRecords object with ground truth haplotype data.
+    Read legacy F1 gamete BED ground truth as scalar 0/1 haplotype intervals.
     """
     co_invs = pd.read_csv(
         co_invs_fn,
         sep='\t',
         names=['chrom', 'start', 'end', 'sample_id', 'haplo', 'strand']
     )
+    if not set(co_invs.haplo.unique()).issubset({0, 1}):
+        raise ValueError('BED ground truth only supports haplotype labels 0 and 1')
 
-    gt = PredictionRecords(chrom_sizes, bin_size, set(co_invs.sample_id))
+    experiment_params = ExperimentParams(
+        lifecycle_stage='gametes',
+        crossing_strategy='f1',
+        sequencing_type='other',
+        genotyping_strategy='founder',
+    )
+    gt = PredictionRecords(chrom_sizes, bin_size, experiment_params)
 
     for sample_id, sample_invs in co_invs.groupby('sample_id'):
         for chrom, n in gt.nbins.items():
             chrom_invs = sample_invs.query('chrom == @chrom')
             gt[sample_id, chrom] = co_invs_to_gt(chrom_invs, bin_size, n)
-    return gt
-
-
-def read_ground_truth_haplotypes_json(pred_json_fn, bc_haplotype=0):
-    """
-    Read ground truth haplotypes from a JSON file.
-
-    Parameters
-    ----------
-    pred_json_fn : str
-        Path to the JSON file.
-
-    Returns
-    -------
-    gt : PredictionRecords
-        Ground truth haplotypes with haplotype probabilities rounded to integers.
-    """
-    gt = PredictionRecords.read_json(pred_json_fn)
-    if gt.ploidy_type == 'haploid':
-        for *_, m in gt.deep_items():
-            np.round(m, decimals=0, out=m)
-    elif gt.ploidy_type == 'diploid_bc1':
-        for *_, m in gt.deep_items():
-            np.round(2 * (m - 0.5 * bc_haplotype), decimals=0, out=m)
-    elif gt.ploidy_type == 'diploid_f2':
-        raise NotImplementedError('Simulation with a "diploid_f2" ground truth sample is currently not supported')
     return gt
 
 
@@ -149,114 +114,110 @@ def random_bg_sample(m, n_bg, bg_signal=None, rng=DEFAULT_RNG):
     return bg
 
 
-def apply_gt_to_markers(gt, m, bg_rate, bg_signal, conv_bins, rng=DEFAULT_RNG):
+def _ground_truth_dosage(ground_truth, sample_id, chrom, thresholded=True):
+    dosage = ground_truth.get_haplotype_dosage(sample_id, chrom)
+    if thresholded:
+        dosage = np.round(dosage)
+    return dosage.astype(float, copy=False)
+
+
+def _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=True):
+    source_dosage = {
+        chrom: co_preds.get_haplotype_dosage(cb, chrom)
+        for chrom in co_preds.chrom_sizes
+    }
+    agreement = marker_agreement_fraction(
+        co_markers[cb],
+        source_dosage,
+        thresholded=thresholded,
+    )
+    if np.isnan(agreement):
+        return 0.0
+    return np.clip(1.0 - agreement, 0.0, 1.0)
+
+
+def _validate_source_predictions(co_markers, co_preds):
+    if set(co_markers.barcodes) != set(co_preds.barcodes):
+        raise ValueError('Source marker and prediction barcodes do not match')
+    if co_markers.chrom_sizes != co_preds.chrom_sizes:
+        raise ValueError('Source marker and prediction chromosome sizes do not match')
+    if co_markers.bin_size != co_preds.bin_size:
+        raise ValueError('Source marker and prediction bin sizes do not match')
+
+
+def _validate_ground_truth_compatibility(co_markers, ground_truth):
+    if co_markers.chrom_sizes != ground_truth.chrom_sizes:
+        raise ValueError('Source markers and ground truth chromosome sizes do not match')
+    if co_markers.bin_size != ground_truth.bin_size:
+        raise ValueError('Source markers and ground truth bin sizes do not match')
+
+
+def apply_gt_dosage_to_markers(gt_dosage, m, noise_fraction, rng=DEFAULT_RNG):
     """
-    Simulate marker counts using a known ground truth haplotype.
+    Redistribute source marker row sums across target haplotypes.
 
-    Parameters
-    ----------
-    gt : ndarray
-        Ground truth haplotype (binary array).
-    m : ndarray
-        Input marker array for a single chromosome.
-    bg_rate : float
-        Estimated background rate for the cell.
-    bg_signal : ndarray
-        Per-bin background signal for the chromosome.
-    conv_bins : convolution size for rough fg/bg estimation
-    rng : Generator, optional
-        NumPy random generator.
-
-    Returns
-    -------
-    sim : ndarray
-        Simulated marker array with shape (n_bins, 2).
+    ``gt_dosage`` defines the target inherited haplotype dosage per bin. The
+    barcode-specific ``noise_fraction`` mixes this foreground profile with a
+    uniform background profile before multinomially sampling the source row sums.
     """
-    gt = gt.astype(int)
-    s = len(m)
+    if gt_dosage.ndim != 2:
+        raise ValueError('ground-truth dosage must have shape (bins, haplotypes)')
+    if len(gt_dosage) != len(m):
+        raise ValueError('ground-truth dosage and marker arrays have different bin counts')
 
-    m_smooth = smooth_counts_sum(m, conv_bins)
-    nf = m_smooth.mean()
-    bg_probs = 1 - (m_smooth + nf / 2) / (m_smooth.sum(axis=1, keepdims=True) + nf)
-    # simulate a realistic background signal using the average background across the dataset
-    tot = m.sum(axis=None)
-    if tot:
-        n_bg = round(tot * bg_rate)
-        bg = random_bg_sample(m, n_bg, bg_signal * bg_probs, rng=rng)
-    else:
-        bg = m.copy()
-    fg = m - bg
+    row_totals = m.sum(axis=1).astype(int)
+    dosage_total = gt_dosage.sum(axis=1, keepdims=True)
+    fg_profile = gt_dosage / np.maximum(dosage_total, 1e-12)
+    bg_profile = np.full_like(fg_profile, 1.0 / fg_profile.shape[1], dtype=float)
 
-    # flatten haplotypes
-    fg = fg.sum(axis=1)
-    bg = bg.sum(axis=1)
+    p = (1.0 - noise_fraction) * fg_profile + noise_fraction * bg_profile
+    p = p / np.maximum(p.sum(axis=1, keepdims=True), 1e-12)
 
-    sim = np.zeros(shape=(s, 2))
-    idx = np.arange(s)
-
-    # apply fg at ground truth haplotype, and bg on other haplotype
-    sim[idx, gt] = fg
-    sim[idx, 1 - gt] = bg
-
+    sim = np.zeros_like(gt_dosage, dtype=m.dtype)
+    for i, n in enumerate(row_totals):
+        if n > 0:
+            sim[i] = rng.multinomial(int(n), p[i])
     return sim
 
 
-def simulate_singlets(co_markers, ground_truth, bg_signal, frac_bg, nsim_per_sample,
-                     conv_window_size, rng=DEFAULT_RNG):
+def simulate_singlets(co_markers, co_preds, ground_truth, nsim_per_sample,
+                      thresholded=True, noise_fraction=None, rng=DEFAULT_RNG):
     """
-    Simulate single-cell barcodes based on ground truth haplotypes.
+    Simulate single-cell barcodes from source depth/noise and target ground truth.
 
-    Parameters
-    ----------
-    co_markers : MarkerRecords
-        Haplotype-specific markers from a real dataset, to use as basis for simulation.
-    ground_truth : PredictionRecords
-        Ground truth haplotype calls from a different dataset, to be simulated.
-    bg_signal : dict
-        Per-bin background signal per chromosome.
-    frac_bg : dict
-        Background fraction per cell barcode.
-    nsim_per_sample : int
-        Number of simulated cells per ground truth haplotype.
-    conv_window_size : int, optional
-        Window size for convolution-based background estimation.
-    rng : Generator, optional
-        NumPy random generator.
-
-    Returns
-    -------
-    sim_co_markers : MarkerRecords
-        Simulated haplotype-specific marker records.
+    Source marker row sums provide depth, source predictions provide barcode-level
+    noise estimates, and ground truth provides the target haplotype dosage profile.
     """
-    sim_co_markers = MarkerRecords.new_like(co_markers, copy_metadata=False)
-    # copy non- barcode-specific metadata, regenerate barcode-specific metadata with new sim barcodes:
-    metadata_to_recreate = {}
-    for md_name, metadata in co_markers.metadata.items():
-        if 'cb' in metadata.levels:
-            sim_co_markers.add_metadata(**{md_name: metadata.new_like(metadata)})
-            metadata_to_recreate[md_name] = metadata.levels.index('cb')
-        else:
-            sim_co_markers.add_metadata(**{md_name: metadata.copy()})
+    _validate_source_predictions(co_markers, co_preds)
+    _validate_ground_truth_compatibility(co_markers, ground_truth)
+
+    sim_co_markers = MarkerRecords(
+        ground_truth.chrom_sizes,
+        co_markers.bin_size,
+        ground_truth.experiment_params,
+    )
     sim_co_markers.add_metadata(ground_truth=NestedDataArray(levels=('cb', 'chrom')))
-    sim_id_mapping = defaultdict(list)
-    conv_bins = conv_window_size // co_markers.bin_size
+
     for sample_id in ground_truth.barcodes:
         cbs_to_sim = rng.choice(co_markers.barcodes, replace=False, size=nsim_per_sample)
         for cb in cbs_to_sim:
             sim_id = f'{sample_id}:{cb}'
-            sim_id_mapping[cb].append(sim_id)
+            cb_noise = (
+                np.clip(noise_fraction, 0.0, 1.0)
+                if noise_fraction is not None
+                else _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=thresholded)
+            )
             for chrom in ground_truth.chrom_sizes:
-                gt = ground_truth[sample_id, chrom]
-                sim_co_markers[sim_id, chrom] = apply_gt_to_markers(
-                    gt, co_markers[cb, chrom],
-                    frac_bg[cb], bg_signal[chrom], conv_bins, rng=rng
+                gt_dosage = _ground_truth_dosage(
+                    ground_truth, sample_id, chrom, thresholded=thresholded
                 )
-                sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt
-    for md_name, lvl_idx in metadata_to_recreate.items():
-        for metadata_idx, val in co_markers.metadata[md_name].deep_items():
-            for sim_id in sim_id_mapping[metadata_idx[lvl_idx]]:
-                sim_metadata_idx = metadata_idx[:lvl_idx] + (sim_id, ) + metadata_idx[lvl_idx + 1:]
-                sim_co_markers.metadata[md_name][sim_metadata_idx] = val
+                sim_co_markers[sim_id, chrom] = apply_gt_dosage_to_markers(
+                    gt_dosage,
+                    co_markers[cb, chrom],
+                    cb_noise,
+                    rng=rng,
+                )
+                sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage
 
     return sim_co_markers
 
@@ -310,10 +271,6 @@ def simulate_doublets(co_markers, n_doublets, doublet_weight=None, doublet_ratio
         for chrom in sim_co_markers_doublets.chrom_sizes:
             m_i = co_markers[cb_i, chrom]
             m_j = co_markers[cb_j, chrom]
-            if rng.random() > 0.5:
-                m_i = np.flip(m_i, axis=1)
-            if rng.random() > 0.5:
-                m_j = np.flip(m_j, axis=1)
             doublet_n_markers = (m_i.sum() + m_j.sum()) // 2
             m_i_samp = random_bg_sample(m_i, int(doublet_n_markers * i_frac))
             m_j_samp = random_bg_sample(m_j, int(doublet_n_markers * (1 - i_frac)))
@@ -321,56 +278,52 @@ def simulate_doublets(co_markers, n_doublets, doublet_weight=None, doublet_ratio
     return sim_co_markers_doublets
 
 
-def generate_simulated_data(co_markers, ground_truth,
-                            conv_window_size=2_500_000,
-                            bg_rate=None, nsim_per_sample=100,
-                            doublet_rate=0.0, rng=DEFAULT_RNG):
+def generate_simulated_data(co_markers, co_preds, ground_truth,
+                            noise_fraction=None, nsim_per_sample=100,
+                            doublet_rate=0.0, thresholded=True,
+                            rng=DEFAULT_RNG):
     """
-    Generate simulated crossover marker data using real background and ground truth haplotypes.
+    Generate simulated crossover marker data using source depth/noise and target ground truth.
 
     Parameters
     ----------
     co_markers : MarkerRecords
-        Haplotype-specific markers from a real dataset, to use as basis for simulation.
+        Source haplotype-specific markers whose row sums provide simulated depth.
+    co_preds : PredictionRecords
+        Source predictions for ``co_markers`` used to estimate barcode-specific noise.
     ground_truth : PredictionRecords
-        Ground truth haplotype calls from a different dataset, to be simulated.
-    conv_window_size : int, optional
-        Window size for convolution-based background estimation.
-    bg_rate : float, optional
-        Fixed background rate (override background rate estimation from data).
+        Target ground truth haplotype dosage/calls to be simulated.
+    noise_fraction : float, optional
+        Fixed noise fraction. If omitted, estimate per-source-barcode noise from ``co_preds``.
     nsim_per_sample : int, optional
-        Number of simulated cells per ground truth haplotype.
+        Number of simulated cells per ground truth sample.
     doublet_rate : float, optional
         Fraction or number of doublets to simulate.
+    thresholded : bool, optional
+        If True, round source predictions and target ground truth dosage before simulation.
     rng : Generator, optional
         NumPy random generator.
 
     Returns
     -------
     sim_co_markers : MarkerRecords
-        Simulated haplotype-specific marker records, including simulated singlet and doublet barcodes
+        Simulated haplotype-specific marker records, including optional doublet barcodes.
     """
-    co_markers = estimate_overall_background_signal(
-        co_markers,
-        conv_window_size,
-        max_frac_bg=1.0,
-        apply_per_geno=False # todo, should this be exposed?
-    )
-    bg_signal = co_markers.metadata['background_signal']['ungrouped'] # bit of a hack
-    frac_bg = co_markers.metadata['estimated_background_fraction']
-    if bg_rate is not None:
-        frac_bg = defaultdict(lambda: bg_rate)
-
     sim_co_markers = simulate_singlets(
-        co_markers, ground_truth, bg_signal, frac_bg, nsim_per_sample,
-        conv_window_size, rng=rng
+        co_markers,
+        co_preds,
+        ground_truth,
+        nsim_per_sample,
+        thresholded=thresholded,
+        noise_fraction=noise_fraction,
+        rng=rng,
     )
 
     if doublet_rate:
         doublet_rate = int(len(sim_co_markers) * doublet_rate) if doublet_rate < 1 else int(doublet_rate)
         log.info(f'Simulating {doublet_rate} doublet barcodes')
         sim_co_markers.merge(
-            simulate_doublets(co_markers, doublet_rate, rng=rng),
+            simulate_doublets(sim_co_markers, doublet_rate, rng=rng),
             inplace=True
         )
     return sim_co_markers
@@ -397,11 +350,10 @@ def ground_truth_from_marker_records(co_markers):
     return ground_truth
 
 
-def run_sim(marker_json_fn, output_json_fn, ground_truth_fn, *,
+def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
             cb_whitelist_fn=None, bin_size=25_000,
             min_markers_per_cb=100, min_markers_per_chrom=20,
-            bg_marker_rate=None, bg_window_size=2_500_000,
-            nsim_per_sample=100, n_doublets=0.0,
+            noise_fraction=None, nsim_per_sample=100, n_doublets=0.0,
             rng=DEFAULT_RNG):
     """
     Run the full simulation pipeline to create synthetic marker data from ground truth.
@@ -410,6 +362,8 @@ def run_sim(marker_json_fn, output_json_fn, ground_truth_fn, *,
     ----------
     marker_json_fn : str
         Path to marker JSON file.
+    pred_json_fn : str
+        Path to prediction JSON for source marker barcodes. Used to estimate noise.
     output_json_fn : str
         Output path for simulated JSON file.
     ground_truth_fn : str
@@ -422,10 +376,8 @@ def run_sim(marker_json_fn, output_json_fn, ground_truth_fn, *,
         Minimum number of markers required per barcode (default is 100).
     min_markers_per_chrom : int, optional
         Minimum number of markers required per chromosome (default is 20).
-    bg_marker_rate : float, optional
-        Fixed background rate.
-    bg_window_size : int, optional
-        Window size for convolution-based background estimation.
+    noise_fraction : float, optional
+        Fixed fraction of markers to sample as uniform background noise.
     nsim_per_sample : int, optional
         Number of simulations per ground truth haplotype.
     n_doublets : float, optional
@@ -439,23 +391,27 @@ def run_sim(marker_json_fn, output_json_fn, ground_truth_fn, *,
         Simulated marker data.
     """
     co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
+    co_preds = load_json(
+        pred_json_fn, cb_whitelist_fn, bin_size, data_type='predictions'
+    )
     if min_markers_per_cb or min_markers_per_chrom:
         co_markers = filter_low_coverage_barcodes(
             co_markers, min_markers_per_cb, min_markers_per_chrom
         )
+        co_preds = co_preds.filter(co_markers.barcodes, inplace=False)
 
     if os.path.splitext(ground_truth_fn)[1] == '.bed':
         ground_truth_haplotypes = read_ground_truth_haplotypes_bed(
             ground_truth_fn, co_markers.chrom_sizes, bin_size
         )
     else:
-        ground_truth_haplotypes = read_ground_truth_haplotypes_json(ground_truth_fn)
+        ground_truth_haplotypes = PredictionRecords.read_json(ground_truth_fn)
     log.info(f'Read {len(ground_truth_haplotypes)} ground truth samples from {ground_truth_fn}')
     sim_co_markers = generate_simulated_data(
         co_markers,
+        co_preds,
         ground_truth_haplotypes,
-        bg_rate=bg_marker_rate,
-        conv_window_size=bg_window_size,
+        noise_fraction=noise_fraction,
         nsim_per_sample=nsim_per_sample,
         doublet_rate=n_doublets,
         rng=rng

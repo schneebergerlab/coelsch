@@ -336,7 +336,7 @@ def _edge_window(edge, window_size):
 
 def gt_crossover_precision_recall(cb_co_preds, cb_co_gt, window_size=40):
     """
-    Calculate soft crossover precision and recall from haplotype dosage edges.
+    Calculate crossover precision and recall from haplotype dosage edges.
 
     Both inputs must be dictionaries of chrom -> haplotype dosage matrix. Recall
     asks what fraction of true crossover edge mass was recovered nearby, while

@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 
 from .rhmm.utils import mask_array_zeros
+from .gt_assignment import assign_co_samples_to_gt
 from ..records import PredictionRecords, NestedData, NestedDataArray
 from coelsch.main.logger import progress_bar
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -147,4 +148,12 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
     )
     if sample_paths:
         co_preds.add_metadata(crossover_samples=crossover_samples)
+        if 'ground_truth' in co_markers.metadata:
+            co_sample_gt_assignment = assign_co_samples_to_gt(
+                crossover_samples,
+                co_markers.metadata['ground_truth'],
+                experiment_params=co_markers.experiment_params,
+                ploidy=co_markers.experiment_params.ploidy,
+            )
+            co_preds.add_metadata(co_sample_gt_assignment=co_sample_gt_assignment)
     return co_preds

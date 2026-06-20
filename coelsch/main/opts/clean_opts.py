@@ -83,6 +83,15 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--threshold-ground-truth/--soft-ground-truth', 'thresholded',
+    subcommands=['sim'],
+    required=False,
+    default=True,
+    help='Whether to round source predictions and ground truth dosage before simulating markers.'
+)
+
+
+coelsch_opts.option(
     '--min-markers-per-cb',
     subcommands=['loadbam', 'loadcsl', 'clean', 'sim', 'bam2pred', 'csl2pred'],
     required=False,

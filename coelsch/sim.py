@@ -78,42 +78,6 @@ def read_ground_truth_haplotypes_bed(co_invs_fn, chrom_sizes, bin_size=25_000):
     return gt
 
 
-def random_bg_sample(m, n_bg, bg_signal=None, rng=DEFAULT_RNG):
-    """
-    Randomly sample background signal proportionally to observed counts and background model.
-
-    Parameters
-    ----------
-    m : np.ndarray
-        Marker count matrix with shape (bins, haplotypes).
-    bg_signal : np.ndarray
-        Background probabilities with shape (bins, haplotypes).
-    n_bg : int
-        Number of background markers to sample.
-    rng : np.random.Generator, optional
-        Random number generator.
-
-    Returns
-    -------
-    np.ndarray
-        Matrix of sampled background markers.
-    """
-    if bg_signal is None:
-        bg_signal = np.ones_like(m)
-    bg_idx = np.nonzero(m)
-    m_valid = m[bg_idx]
-    p = m_valid * bg_signal[bg_idx]
-    bg = np.zeros_like(m)
-    p_denom = p.sum(axis=None)
-    if p_denom == 0:
-        return bg
-    p = p / p_denom
-    n_p = p.shape[0]
-    bg_c = np.bincount(rng.choice(np.arange(n_p), size=n_bg, replace=True, p=p), minlength=n_p)
-    bg[bg_idx] = np.minimum(bg_c, m_valid)
-    return bg
-
-
 def _ground_truth_dosage(ground_truth, sample_id, chrom, thresholded=True):
     dosage = ground_truth.get_haplotype_dosage(sample_id, chrom)
     if thresholded:
@@ -199,9 +163,9 @@ def simulate_singlets(co_markers, co_preds, ground_truth, nsim_per_sample,
     sim_co_markers.add_metadata(ground_truth=NestedDataArray(levels=('cb', 'chrom')))
 
     for sample_id in ground_truth.barcodes:
-        cbs_to_sim = rng.choice(co_markers.barcodes, replace=False, size=nsim_per_sample)
-        for cb in cbs_to_sim:
-            sim_id = f'{sample_id}:{cb}'
+        cbs_to_sim = rng.choice(co_markers.barcodes, replace=True, size=nsim_per_sample)
+        for sim_idx, cb in enumerate(cbs_to_sim):
+            sim_id = f'{sample_id}:{sim_idx}:{cb}'
             cb_noise = (
                 np.clip(noise_fraction, 0.0, 1.0)
                 if noise_fraction is not None
@@ -271,9 +235,8 @@ def simulate_doublets(co_markers, n_doublets, doublet_weight=None, doublet_ratio
         for chrom in sim_co_markers_doublets.chrom_sizes:
             m_i = co_markers[cb_i, chrom]
             m_j = co_markers[cb_j, chrom]
-            doublet_n_markers = (m_i.sum() + m_j.sum()) // 2
-            m_i_samp = random_bg_sample(m_i, int(doublet_n_markers * i_frac))
-            m_j_samp = random_bg_sample(m_j, int(doublet_n_markers * (1 - i_frac)))
+            m_i_samp = rng.binomial(m_i.astype(int), i_frac)
+            m_j_samp = rng.binomial(m_j.astype(int), 1 - i_frac)
             sim_co_markers_doublets[sim_id, chrom] = m_i_samp + m_j_samp
     return sim_co_markers_doublets
 
@@ -354,7 +317,7 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
             cb_whitelist_fn=None, bin_size=25_000,
             min_markers_per_cb=100, min_markers_per_chrom=20,
             noise_fraction=None, nsim_per_sample=100, n_doublets=0.0,
-            rng=DEFAULT_RNG):
+            thresholded=True, rng=DEFAULT_RNG):
     """
     Run the full simulation pipeline to create synthetic marker data from ground truth.
 
@@ -382,6 +345,8 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
         Number of simulations per ground truth haplotype.
     n_doublets : float, optional
         Number or fraction of doublets to simulate.
+    thresholded : bool, optional
+        If True, round source predictions and target ground truth dosage before simulation.
     rng : Generator, optional
         NumPy random generator.
 
@@ -414,6 +379,7 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
         noise_fraction=noise_fraction,
         nsim_per_sample=nsim_per_sample,
         doublet_rate=n_doublets,
+        thresholded=thresholded,
         rng=rng
     )
     log.info(f'Simulated {len(sim_co_markers)} barcodes total')

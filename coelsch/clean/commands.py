@@ -119,14 +119,7 @@ def run_clean(marker_json_fn, output_json_fn, *,
         )
 
     if mask_imbalanced:
-        # These imbalance masks estimate two-haplotype allele ratios. Multi-parent
-        # records need a different model, so leave their counts untouched here.
-        if n_haplotypes != 2:
-            log.warning(
-                f'Skipping haplotype imbalance masking for {n_haplotypes}-channel MarkerRecords; '
-                'only two-channel records are supported'
-            )
-        elif sequencing_type != "wgs":
+        if sequencing_type != "wgs":
             log.info(
                 f'Masking marker imbalances with single-cell method'
             )
@@ -146,10 +139,10 @@ def run_clean(marker_json_fn, output_json_fn, *,
             log.info(
                 f'Masking marker imbalances with whole-genome resequencing method'
             )
-            # special masking method for wgs data which has much greater coverage
+            # WGS has enough depth to identify robust haplotype-composition outliers.
             mask, n_masked = create_resequencing_haplotype_imbalance_mask(
                 co_markers,
-                expected_ratio=expected_ratio[0] / expected_ratio.sum(),
+                expected_ratio='auto',
                 apply_per_geno=apply_per_geno,
             )
             co_markers = apply_haplotype_imbalance_mask(

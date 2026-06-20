@@ -5,6 +5,25 @@ from scipy.ndimage import binary_dilation
 from ..records import MarkerRecords, NestedDataArray
 
 
+def _normalise_expected_ratio(expected_ratio, n_haplotypes):
+    if expected_ratio is None:
+        expected_ratio = np.ones(n_haplotypes, dtype=float)
+    expected_ratio = np.asarray(expected_ratio, dtype=float)
+    if expected_ratio.ndim == 0:
+        if n_haplotypes != 2:
+            raise ValueError('scalar expected_ratio is only valid for two haplotypes')
+        expected_ratio = np.array([expected_ratio, 1.0 - expected_ratio], dtype=float)
+    if expected_ratio.shape[0] != n_haplotypes:
+        raise ValueError(
+            f'expected_ratio has length {expected_ratio.shape[0]}, '
+            f'but MarkerRecords has {n_haplotypes} channels'
+        )
+    total = expected_ratio.sum()
+    if total <= 0:
+        raise ValueError('expected_ratio must have positive sum')
+    return expected_ratio / total
+
+
 def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0.75, min_cb=20,
                                                 expected_ratio=None, apply_per_geno=True):
     """
@@ -15,7 +34,7 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     co_markers : MarkerRecords
         Marker data with haplotype-specific read counts.
     max_imbalance_mask : float, default=0.75
-        Maximum allowed deviation around the expected first-channel ratio.
+        Maximum allowed absolute deviation around the expected haplotype ratios.
     min_cb : int, default=20
         Minimum number of cell barcodes required per bin.
     expected_ratio : array-like, optional
@@ -30,18 +49,11 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     int
         Total number of bins masked.
     """
-    if co_markers.n_haplotypes != 2:
-        raise NotImplementedError(
-            'Single-cell haplotype imbalance masking is only supported for two-channel MarkerRecords'
-        )
-    if expected_ratio is None:
-        expected_ratio = np.ones(2, dtype=float)
-    expected_ratio = np.asarray(expected_ratio, dtype=float)
-    expected_ratio /= expected_ratio.sum()
-    expected_first = expected_ratio[0]
+    n_haplotypes = co_markers.n_haplotypes
+    expected_ratio = _normalise_expected_ratio(expected_ratio, n_haplotypes)
     tolerance = max_imbalance_mask - 0.5
-    lower_bound = max(0.0, expected_first - tolerance)
-    upper_bound = min(1.0, expected_first + tolerance)
+    if tolerance < 0:
+        raise ValueError('max_imbalance_mask must be at least 0.5')
 
     imbalance_mask = NestedDataArray(levels=('genotype', 'chrom'))
     n_masked_all_genos = []
@@ -58,15 +70,15 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
         imbalance_mask[geno] = {}
         n_masked = 0
         for chrom, m in tot_signal.items():
-            with np.errstate(invalid='ignore'):
-                bin_sum = m.sum(axis=1)
-                ratio = m[:, 0] / bin_sum
-            np.nan_to_num(ratio, nan=expected_first, copy=False)
-            ratio_mask = (ratio > upper_bound) | (ratio < lower_bound)
+            bin_sum = m.sum(axis=1, keepdims=True)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                ratio = m / bin_sum
+            ratio = np.where(bin_sum > 0, ratio, expected_ratio[None, :])
+            ratio_mask = np.any(np.abs(ratio - expected_ratio[None, :]) > tolerance, axis=1)
             count_mask = tot_obs[chrom] >= min_cb
             mask = np.logical_and(ratio_mask, count_mask)
             n_masked += mask.sum(axis=None)
-            imbalance_mask[geno, chrom] = np.stack([mask, mask], axis=1)
+            imbalance_mask[geno, chrom] = np.repeat(mask[:, None], n_haplotypes, axis=1)
         n_masked_all_genos.append(n_masked)
     co_markers.add_metadata(haplotype_imbalance_mask=imbalance_mask)
     return imbalance_mask, int(np.median(n_masked_all_genos))
@@ -89,18 +101,18 @@ def median_absolute_deviation(arr):
 
 
 def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='auto',
-                                                 nmad_mask=3, correction=1e-2,
+                                                 nmad_mask=5, correction=1e-2,
                                                  apply_per_geno=True):
     """
     Special haplotype imbalance method for resequencing data (not scRNA)
-    that identifies bins with extreme allele imbalance.
+    that identifies bins with extreme haplotype composition outliers.
 
     Parameters
     ----------
     co_markers : MarkerRecords
         Object containing per-cell, per-chromosome haplotype marker counts.
-    expected_ratio : float or 'auto', optional
-        Expected allele ratio. If 'auto', it is estimated from the data as the median ratio.
+    expected_ratio : array-like or 'auto', optional
+        Expected haplotype ratio. If 'auto', it is estimated from the data as the median ratio.
     nmad_mask : int, optional
         Number of median absolute deviations (MADs) to use for outlier detection.
     correction : float, optional
@@ -111,39 +123,53 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
     Returns
     -------
     dict of str to np.ndarray
-        Dictionary mapping chromosome names to boolean masks of shape (bins,),
-        where True indicates a bin to exclude due to outlier allele ratio.
+        Dictionary mapping chromosome names to boolean masks of shape (bins, haplotypes),
+        where True indicates a bin to exclude due to outlier haplotype composition.
     """
-    if co_markers.n_haplotypes != 2:
-        raise NotImplementedError(
-            'Resequencing haplotype imbalance masking is only supported for two-channel MarkerRecords'
-        )
+    n_haplotypes = co_markers.n_haplotypes
     imbalance_mask = NestedDataArray(levels=('genotype', 'chrom'))
     n_masked_all_genos = []
     for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):
         n_masked = 0
-        chrom_allele_ratios = {}
+        chrom_ratios = {}
         chrom_marker_masks = {}
         for chrom in geno_co_markers.chrom_sizes:
             m = geno_co_markers[:, chrom].stack_values()
-            m_norm = (m / m.sum(axis=(1, 2))[:, np.newaxis, np.newaxis]).sum(axis=0)
-            tot = m_norm.sum(axis=1)
-            chrom_marker_masks[chrom] = tot > 0
-            chrom_allele_ratios[chrom] = (m_norm[:, 0] + correction) / (tot + correction)
+            cb_totals = m.sum(axis=(1, 2))[:, np.newaxis, np.newaxis]
+            with np.errstate(invalid='ignore', divide='ignore'):
+                m_norm = np.where(cb_totals > 0, m / cb_totals, 0.0).sum(axis=0)
+            tot = m_norm.sum(axis=1, keepdims=True)
+            chrom_marker_masks[chrom] = tot[:, 0] > 0
+            chrom_ratios[chrom] = (m_norm + correction) / (tot + correction * n_haplotypes)
 
-        ar = np.concatenate([ar[chrom_marker_masks[chrom]] for chrom, ar in chrom_allele_ratios.items()])
-        if expected_ratio == 'auto':
-            expected_ratio = np.median(ar)
-        mad = median_absolute_deviation(ar)
+        valid_ratios = np.concatenate([
+            ratios[chrom_marker_masks[chrom]]
+            for chrom, ratios in chrom_ratios.items()
+            if np.any(chrom_marker_masks[chrom])
+        ])
+        if len(valid_ratios) == 0:
+            expected = np.ones(n_haplotypes, dtype=float) / n_haplotypes
+            mad = np.ones(n_haplotypes, dtype=float)
+        else:
+            if isinstance(expected_ratio, str) and expected_ratio == 'auto':
+                expected = np.median(valid_ratios, axis=0)
+                expected /= expected.sum()
+            else:
+                expected = _normalise_expected_ratio(expected_ratio, n_haplotypes)
+            mad = np.array([
+                median_absolute_deviation(valid_ratios[:, i] - expected[i])
+                for i in range(n_haplotypes)
+            ])
+            mad = np.maximum(mad, correction)
 
-        for chrom, allele_ratio in chrom_allele_ratios.items():
-            allele_ratio[~chrom_marker_masks[chrom]] = expected_ratio
-            mask = binary_dilation(np.logical_or(
-                allele_ratio < (expected_ratio - mad * nmad_mask),
-                allele_ratio > (expected_ratio + mad * nmad_mask),
+        for chrom, ratios in chrom_ratios.items():
+            ratios[~chrom_marker_masks[chrom]] = expected
+            mask = binary_dilation(np.any(
+                np.abs(ratios - expected[None, :]) > (mad[None, :] * nmad_mask),
+                axis=1,
             ))
             n_masked += mask.sum(axis=None)
-            imbalance_mask[geno, chrom] = np.stack([mask, mask], axis=1)
+            imbalance_mask[geno, chrom] = np.repeat(mask[:, None], n_haplotypes, axis=1)
         n_masked_all_genos.append(n_masked)
     co_markers.add_metadata(haplotype_imbalance_mask=imbalance_mask)
     return imbalance_mask, int(np.median(n_masked_all_genos))

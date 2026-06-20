@@ -1,9 +1,8 @@
 import logging
 import numpy as np
 import pandas as pd
-from scipy.ndimage import convolve1d
-
 from .utils import load_json
+from .records import PredictionRecords
 
 
 log = logging.getLogger('coelsch')
@@ -245,85 +244,173 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     return qual_metrics
 
 
-def gt_haplotype_accuracy_score(cb_co_preds, cb_co_gt, thresholded=False, max_score=10):
+def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False, max_score=10):
     """
-    Calculates the accuracy score for genotypes based on predicted and ground truth haplotypes.
+    Calculate a phred-like score from mean absolute haplotype dosage error.
 
     Parameters
     ----------
     cb_co_preds : dict
-        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+        A dictionary where keys are chromosomes and values are haplotype dosage arrays.
     cb_co_gt : dict
-        A dictionary where keys are chromosomes and values are arrays representing ground truth haplotypes.
+        A dictionary where keys are chromosomes and values are ground-truth haplotype dosage arrays.
     thresholded : bool, optional
-        If True, thresholds the predictions at 0.5 before calculating the accuracy score (default is False).
+        If True, round both predicted and ground-truth dosage before scoring.
     max_score : int, optional
-        The maximum score for accuracy (default is 10).
+        The maximum score (default is 10).
 
     Returns
     -------
     float
-        The haplotype accuracy score on a phred-like scale, capped at the provided `max_score`.
+        The haplotype MAE score, capped at the provided `max_score`.
     """
-    dev = 0
-    nbins = 0
+    abs_error = 0.0
+    total_dosage = 0.0
+
     for chrom, p in cb_co_preds.items():
+        gt = cb_co_gt[chrom]
+
+        if p.ndim != 2 or gt.ndim != 2:
+            raise ValueError('gt_haplotype_mae_score requires dosage matrices')
+
+        if p.shape != gt.shape:
+            raise ValueError(
+                f'prediction and ground truth shapes do not match: {p.shape} != {gt.shape}'
+            )
+
         if thresholded:
-            p = (p > 0.5).astype(np.float32)
-        gt = cb_co_gt[chrom]
-        dev += np.abs(p - gt).sum(axis=None)
-        nbins += len(p)
-    with np.errstate(divide='ignore'):
-        return np.minimum(-np.log2(dev / nbins), max_score)
+            p = np.round(p)
+            gt = np.round(gt)
 
+        abs_error += np.abs(p - gt).sum(axis=None)
+        total_dosage += gt.sum(axis=None)
 
-def _co_score(p, gt, ws=40):
-    assert not ws % 2
-    filt = np.ones(ws) / ws
-    filt[: ws // 2] = np.negative(filt[: ws // 2])
-    gt_c = convolve1d((gt - 0.5) * 2, filt, mode='nearest')
-    p_c = convolve1d((p - 0.5) * 2, filt, mode='nearest')
-    return np.trapz(gt_c * p_c)
-
-
-def gt_crossover_score(cb_co_preds, cb_co_gt, window_size=40):
-    """
-    Calculates the crossover score between predicted and ground truth haplotypes.
-
-    Parameters
-    ----------
-    cb_co_preds : dict
-        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
-    cb_co_gt : dict
-        A dictionary where keys are chromosomes and values are arrays representing ground truth haplotypes.
-    window_size : int, optional
-        The window size for the filter (default is 40).
-
-    Returns
-    -------
-    float
-        The calculated crossover score, or NaN if no crossovers are detected.
-    """
-    n_co = n_crossovers(cb_co_gt)
-    if not n_co:
+    if total_dosage <= 0:
         return np.nan
-    co = 0
-    for chrom, p in cb_co_preds.items():
+
+    mae = abs_error / total_dosage
+    if mae <= 0:
+        return max_score
+
+    with np.errstate(divide='ignore'):
+        return np.minimum(-np.log2(mae), max_score)
+
+
+def _dosage_edge_signal(dosage):
+    """
+    Convert haplotype dosage into crossover edge mass.
+
+    Each edge is the expected number of inherited haplotype-copy switches
+    between adjacent bins.
+    """
+    if dosage.ndim != 2:
+        raise ValueError('crossover scoring requires dosage matrices')
+
+    return 0.5 * np.abs(np.diff(dosage, axis=0)).sum(axis=1)
+
+
+def _edge_window(edge, window_size):
+    """
+    Mark positions close enough to crossover edges to receive credit.
+
+    The returned array is clipped to [0, 1], so overlapping windows do not give
+    extra credit and perfect overlap remains bounded at precision/recall = 1.
+    """
+    if window_size <= 0:
+        raise ValueError('window_size must be > 0')
+
+    target = np.zeros_like(edge, dtype=float)
+    half = window_size // 2
+
+    for idx, mass in enumerate(edge):
+        if mass <= 0:
+            continue
+
+        # Clip the local window at chromosome boundaries.
+        start = max(0, idx - half)
+        end = min(len(edge), idx + half + 1)
+        target[start:end] = 1.0
+
+    return target
+
+
+def gt_crossover_precision_recall(cb_co_preds, cb_co_gt, window_size=40):
+    """
+    Calculate soft crossover precision and recall from haplotype dosage edges.
+
+    Both inputs must be dictionaries of chrom -> haplotype dosage matrix. Recall
+    asks what fraction of true crossover edge mass was recovered nearby, while
+    precision asks what fraction of predicted crossover edge mass is near truth.
+    """
+    recall_overlap = 0.0
+    precision_overlap = 0.0
+    true_mass = 0.0
+    pred_mass = 0.0
+
+    for chrom, pred in cb_co_preds.items():
         gt = cb_co_gt[chrom]
-        co += _co_score(p, gt, window_size)
-    return np.log10(np.maximum(co / n_co, 1))
+
+        if pred.ndim != 2 or gt.ndim != 2:
+            raise ValueError('crossover scoring requires dosage matrices')
+
+        if pred.shape != gt.shape:
+            raise ValueError(
+                f'prediction and ground truth shapes do not match: {pred.shape} != {gt.shape}'
+            )
+
+        pred_edge = _dosage_edge_signal(pred)
+        gt_edge = _dosage_edge_signal(gt)
+
+        chrom_true_mass = gt_edge.sum()
+        chrom_pred_mass = pred_edge.sum()
+        true_mass += chrom_true_mass
+        pred_mass += chrom_pred_mass
+
+        if chrom_true_mass > 0:
+            # True-edge windows give predicted edges partial credit when close to truth.
+            gt_window = _edge_window(gt_edge, window_size)
+            recall_overlap += np.sum(pred_edge * gt_window)
+
+        if chrom_pred_mass > 0:
+            # Predicted-edge windows give true edges partial credit when close to prediction.
+            pred_window = _edge_window(pred_edge, window_size)
+            precision_overlap += np.sum(gt_edge * pred_window)
+
+    recall = np.nan if true_mass <= 0 else recall_overlap / true_mass
+    precision = np.nan if pred_mass <= 0 else precision_overlap / pred_mass
+
+    return (
+        np.clip(precision, 0.0, 1.0) if not np.isnan(precision) else np.nan,
+        np.clip(recall, 0.0, 1.0) if not np.isnan(recall) else np.nan,
+    )
 
 
 def _max_detectable_cos(m, gt):
-    co_idx = np.where(np.diff(gt))[0] + 1
+    if gt.ndim != 2:
+        raise ValueError('ground truth must be a dosage matrix')
+    if m.shape != gt.shape:
+        raise ValueError(
+            f'marker and ground truth shapes do not match: {m.shape} != {gt.shape}'
+        )
+
+    co_idx = np.where(np.any(np.diff(gt, axis=0), axis=1))[0] + 1
+    if co_idx.size == 0:
+        return 0
+
     m_seg = np.array_split(m, co_idx, axis=0)
-    seg_haps = gt[np.insert(co_idx, 0, 0)].astype(int)
-    supported_haps = []
-    for seg, h in zip(m_seg, seg_haps):
-        support = seg[:, h].sum()
-        if support:
-            supported_haps.append(h)
-    return len(np.where(np.diff(supported_haps))[0])
+    seg_gt = gt[np.insert(co_idx, 0, 0)]
+    supported_gt = []
+
+    for seg, dosage in zip(m_seg, seg_gt):
+        inherited = dosage > 0
+        if inherited.any() and seg[:, inherited].sum() > 0:
+            supported_gt.append(dosage)
+
+    if len(supported_gt) < 2:
+        return 0
+
+    supported_gt = np.asarray(supported_gt)
+    return np.any(np.diff(supported_gt, axis=0), axis=1).sum()
 
 
 def gt_detectable_crossovers(cb_co_markers, cb_co_gt):
@@ -373,28 +460,53 @@ def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred
     score_metrics = []
     for cb, cb_co_preds in co_preds.items():
         cb_co_markers = co_markers[cb]
-        if cb.split(':')[0] != 'doublet':
+        if not cb.startswith('doublet'):
             cb_co_gt = ground_truth[cb]
+            cb_co_pred_dosage = {
+                chrom: co_preds.get_haplotype_dosage(cb, chrom)
+                for chrom in co_preds.chrom_sizes
+            }
+            cb_co_gt_dosage = {
+                chrom: ground_truth.get_haplotype_dosage(cb, chrom)
+                for chrom in ground_truth.chrom_sizes
+            }
+            gt_co_precision, gt_co_recall = gt_crossover_precision_recall(
+                cb_co_pred_dosage,
+                cb_co_gt_dosage,
+            )
             score_metrics.append([
                 cb,
-                int(n_crossovers(cb_co_gt)),
-                gt_detectable_crossovers(cb_co_markers, cb_co_gt),
-                gt_haplotype_accuracy_score(cb_co_preds, cb_co_gt, max_score=max_phred_score),
-                gt_haplotype_accuracy_score(
-                    cb_co_preds, cb_co_gt, thresholded=True, max_score=max_phred_score
+                int(n_crossovers(cb_co_gt_dosage)),
+                gt_detectable_crossovers(cb_co_markers, cb_co_gt_dosage),
+                gt_haplotype_mae_score(
+                    cb_co_pred_dosage, cb_co_gt_dosage, max_score=max_phred_score
                 ),
-                gt_crossover_score(cb_co_preds, cb_co_gt),
+                gt_haplotype_mae_score(
+                    cb_co_pred_dosage, cb_co_gt_dosage,
+                    thresholded=True, max_score=max_phred_score
+                ),
+                gt_co_precision,
+                gt_co_recall,
             ])
         else:
             score_metrics.append([
-                cb, np.nan, np.nan, np.nan, np.nan, np.nan
+                cb, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
             ])
     score_metrics = pd.DataFrame(
         score_metrics,
         columns=['cb', 'gt_n_crossovers', 'gt_detectable_crossovers',
-                 'gt_haplotype_accuracy_score', 'gt_hardcall_accuracy_score', 'gt_crossover_score']
+                 'gt_haplotype_mae_score', 'gt_hardcall_haplotype_mae_score',
+                 'gt_crossover_precision', 'gt_crossover_recall']
     )
     return score_metrics
+
+
+def _ground_truth_from_marker_records(co_markers):
+    ground_truth = PredictionRecords.new_like(co_markers)
+    for cb, chrom_data in co_markers.metadata['ground_truth'].items():
+        for chrom, arr in chrom_data.items():
+            ground_truth[cb, chrom] = np.asarray(arr)
+    return ground_truth
 
 
 def _write_metric_tsv(output_tsv_fn, qual_metrics, score_metrics=None, precision=3):
@@ -455,14 +567,12 @@ def run_stats(marker_json_fn, pred_json_fn, output_tsv_fn, *,
     log.info('Calculating prediction metrics')
     qual_metrics = calculate_prediction_metrics(co_markers, co_preds)
     if 'ground_truth' in co_markers.metadata:
-        # TODO: Rework sim.py ground-truth records and benchmarking metrics for
-        # marginal haplotype dosage predictions before re-enabling this branch.
-        log.warning(
-            'Ground truth benchmarking metrics are temporarily disabled while '
-            'simulation ground-truth records are updated for marginal haplotype '
-            'dosage predictions'
+        ground_truth = _ground_truth_from_marker_records(co_markers)
+        score_metrics = calculate_ground_truth_metrics(
+            co_markers,
+            co_preds,
+            ground_truth,
         )
-        score_metrics = None
     else:
         score_metrics = None
 

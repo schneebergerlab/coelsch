@@ -140,6 +140,7 @@ def run_clean(marker_json_fn, output_json_fn, *,
                 f'Masking marker imbalances with whole-genome resequencing method'
             )
             # WGS has enough depth to identify robust haplotype-composition outliers.
+            # TODO try replacing with GMM fitting from predict/estimate.py and removal of v. low prob bins
             mask, n_masked = create_resequencing_haplotype_imbalance_mask(
                 co_markers,
                 expected_ratio='auto',
@@ -163,6 +164,7 @@ def run_clean(marker_json_fn, output_json_fn, *,
             binwise_hap_mode='independent' if sequencing_type in ('10x_rna', 'bd_rna') else 'shared'
         )
 
+    # TODO evaluate if this is really doing any good and improve or remove if not
     n = len(co_markers)
     # currently this method does not make sense for non-haploid samples or
     # multi-parent marker channels.

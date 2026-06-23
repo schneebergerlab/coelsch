@@ -82,15 +82,15 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
     params = co_markers.experiment_params
     if independent_meioses == 'auto':
         independent_meioses = (
-            params.crossing_strategy == 'four_way'
+            params.crossing_strategy in ('three_way', 'four_way')
             and params.genotyping_strategy == 'founder'
         )
     if independent_meioses and not (
-        params.crossing_strategy == 'four_way'
+        params.crossing_strategy in ('three_way', 'four_way')
         and params.genotyping_strategy == 'founder'
     ):
         raise ValueError(
-            'independent_meioses is only supported for four_way founder designs'
+            'independent_meioses is only supported for three_way and four_way founder designs'
         )
 
     states = params.haplotype_states
@@ -107,10 +107,13 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
     )
 
     if independent_meioses:
-        raise NotImplementedError("TODO fix for channel specific fg/bg")
-        haploid_hmm = RigidHMM(
-            states=((0,), (1,)),
-            n_haplotypes=2,
+        log.info(
+            'Using two independent rHMMs to model male/female meioses, '
+            f'matching crossing_strategy "{params.crossing_strategy}"'
+        )
+
+        return IndependentMeiosesHMM(
+            crossing_strategy=params.crossing_strategy,
             rfactor=rfactor,
             term_rfactor=term_rfactor,
             trans_prob=trans_prob,
@@ -120,7 +123,6 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
             trans_prob_decay_rate=trans_prob_decay_rate,
             device=device
         )
-        return IndependentMeiosesHMM(haploid_hmm)
 
     return RigidHMM(
         states=states,

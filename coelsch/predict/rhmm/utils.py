@@ -1,4 +1,5 @@
 import warnings
+from collections import Counter
 import numpy as np
 import torch
 
@@ -31,12 +32,15 @@ def interp_nan_inplace(arr, axis):
             vec[nan_mask] = np.interp(x, xp, fp)
 
 
-def sorted_edit_distance(state1, state2):
-    dist = 0
-    for h1, h2 in zip(sorted(state1), sorted(state2)):
-        if h1 != h2:
-            dist += 1
-    return dist
+def multiset_edit_distance(a, b):
+    ca = Counter(a)
+    cb = Counter(b)
+    keys = ca.keys() | cb.keys()
+
+    n_del = sum(max(ca[k] - cb[k], 0) for k in keys)
+    n_add = sum(max(cb[k] - ca[k], 0) for k in keys)
+
+    return max(n_del, n_add)
 
 
 def numpy_to_torch(x):

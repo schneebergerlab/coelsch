@@ -67,7 +67,7 @@ coelsch_opts.option(
     default=None,
     help=(
         'Run independent haploid HMMs over separable meioses where supported. '
-        'By default this is enabled for four_way founder designs and disabled otherwise.'
+        'By default this is enabled for three/four way founder designs and disabled otherwise.'
     )
 )
 

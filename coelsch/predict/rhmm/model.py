@@ -88,7 +88,7 @@ class RigidHMM:
 
     def __init__(self, states, rfactor, term_rfactor, trans_prob,
                  fg_params, bg_params, dist_type='poisson', trans_prob_decay_rate=0.25,
-                 n_haplotypes=None, device=DEFAULT_DEVICE):
+                 n_haplotypes=None, allow_uneven_ploidy=False, device=DEFAULT_DEVICE):
         for hap_comb in states:
             if not isinstance(hap_comb, (tuple, list)):
                 raise ValueError(
@@ -97,8 +97,14 @@ class RigidHMM:
         self.states = tuple(tuple(s) for s in states)
         state_lengths = {len(state) for state in self.states}
         if len(state_lengths) != 1:
-            raise ValueError('All HMM states must have the same ploidy')
-        self.ploidy = state_lengths.pop()
+            if allow_uneven_ploidy:
+                # when states are uneven, use the shortest state length as ploidy
+                self.ploidy = min(state_lengths)
+            else:
+                raise ValueError('All HMM states must have the same ploidy')
+        else:
+            self.ploidy = state_lengths.pop()
+        self.allow_uneven_ploidy = allow_uneven_ploidy
         if n_haplotypes is None:
             n_haplotypes = max(hap for state in self.states for hap in state) + 1
         self.n_haplotypes = int(n_haplotypes)
@@ -173,9 +179,16 @@ class RigidHMM:
             dosage = np.zeros((self.nstates, self.n_haplotypes), dtype=np.float32)
             for i, state in enumerate(self.states):
                 for hap, count in Counter(state).items():
-                    dosage[i, hap] = count
+                    dosage[i, hap] = min(count, self.ploidy)
             self._state_haplotype_dosage = dosage
         return self._state_haplotype_dosage
+
+    def set_state_haplotype_dosage(self, dosage):
+        # overrides dosages, required for some IndepedentMeiosesHMM designs
+        dosage = np.asarray(dosage, dtype=float)
+        if dosage.shape != (self.nstates, self.n_haplotypes):
+            raise ValueError('dosage must have shape (nstates, nhaplotypes)')
+        self._state_haplotype_dosage = dosage
 
     def _create_distribution(self, state_idx):
 
@@ -262,7 +275,7 @@ class RigidHMM:
                 if self._transition_probs[i].co:
                     for other in self.states:
                         # only connect states with edit dist 1 with crossovers
-                        if utils.sorted_edit_distance(state, other) == 1:
+                        if utils.multiset_edit_distance(state, other) == 1:
                             self._model.add_edge(
                                 self._distributions[state][i],
                                 self._distributions[other][0],

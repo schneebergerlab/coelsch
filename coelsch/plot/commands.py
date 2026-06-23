@@ -81,6 +81,15 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
     - For `plot_type='recombination'`, a recombination landscape plot is generated for the whole dataset,
       based on the haplotype predictions.
     """
+
+    palette = [
+        '#0072b2', '#d55e00', '#009e73', '#a783c9'
+    ]
+    if ref_colour is not None:
+        palette[0] = ref_colour
+    if alt_colour is not None:
+        palette[1] = alt_colour
+
     if isinstance(max_yheight, str) and max_yheight != 'auto':
         max_yheight = float(max_yheight)
 
@@ -107,8 +116,7 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
             nco_min_prob_change=nco_min_prob_change,
             show_gt=show_gt,
             max_yheight=max_yheight,
-            ref_colour=ref_colour,
-            alt_colour=alt_colour
+            palette=palette
         )
     elif plot_type == 'recombination':
         plot_recombination_landscape(

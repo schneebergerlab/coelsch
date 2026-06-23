@@ -1,23 +1,22 @@
 def kolle_alaaf():
-    R = "\033[0m"
-    BR = "\033[30;41m"
-    YR = "\033[33;41m"
-    BW = "\033[30;47m"
-    BOLD = "\033[1m"
+    B = "\033[1m" # bold
+    R = "\033[0m" # reset
+    BR = "\033[30;41m" # black fg red bg
+    YR = "\033[33;41m" # yellow fg red bg
+    BW = "\033[30;47m" # black fg white bg
 
-    return f'''       {BOLD}C O E L S C H  A L A A F{R}
+    return f'''       {B}C O E L S C H  A L A A F{R}
        {BR}■■■■■■■■■■■■■■■■■■■■■■■■{R}
-       {BR}■   {YR}.  .  .  .  .  .{BR}   ■{R}
-       {BR}■   {YR}◣◢◣◢  ◣◢◣◢  ◣◢◣◢{BR}   ■{R}
-       {BR}■   {YR}‾‾‾‾  ‾‾‾‾  ‾‾‾‾{BR}   ■{R}
+       {BR}■   {B}{YR}.  .  .  .  .  .{R}{BR}   ■{R}
+       {BR}■   {B}{YR}◣◢◣◢  ◣◢◣◢  ◣◢◣◢{R}{BR}   ■{R}
+       {BR}■   {B}{YR}‾‾‾‾  ‾‾‾‾  ‾‾‾‾{R}{BR}   ■{R}
        {BR}■■■■■■■■■■■■■■■■■■■■■■■■{R}
        {BW}■                      ■{R}
-       {BW}■  δ   δ   δ   δ   δ   ■{R}
+       {BW}■  {B}δ   δ   δ   δ   δ{R}{BW}   ■{R}
        {BW}■                      ■{R}
-       {BW}■    δ   δ   δ   δ     ■{R}
-       {BW}◥■                    ■◤{R}
-        {BW}◥■      δ   δ       ■◤{R}
-         {BW}◥■                ■◤{R}
+       {BW}◥■   {B}δ   δ   δ   δ{R}{BW}    ■◤{R}
+        {BW}◥■                  ■◤{R}
+         {BW}◥■     {B}δ   δ{R}{BW}      ■◤{R}
            {BW}◥■            ■◤{R}
              {BW}◥■■■■■■■■■■◤{R}
 coelsch: Platform-agnostic single-cell

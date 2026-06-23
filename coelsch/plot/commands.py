@@ -12,7 +12,7 @@ from .happlots import plot_recombination_landscape
 
 def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
              cb_whitelist_fn=None, plot_type='markerplot', figsize=(18, 4), display_plot=False,
-             show_pred=True, show_co_num=True, show_gt=True, max_yheight=20,
+             show_pred=True, show_co_num=True, show_gt=True, max_yheight='auto',
              window_size=1_000_000, nboots=100, confidence_intervals=95,
              nco_min_prob_change=2.5e-3,
              ref_colour='#0072b2', alt_colour='#d55e00', rng=DEFAULT_RNG):
@@ -48,7 +48,7 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
     show_gt : bool, optional
         Whether to show genotype lines in the plot. Default is True.
     max_yheight : float, optional
-        The maximum y-axis height for the plot. Default is 20.
+        The maximum y-axis height for the plot. Use 'auto' to scale to the dataset.
     window_size : int, optional
         The rolling window size (in base pairs) for calculating recombination landscapes. Default is 1,000,000.
     nboots : int, optional
@@ -81,6 +81,9 @@ def run_plot(cell_barcode, marker_json_fn, pred_json_fn, output_fig_fn=None,
     - For `plot_type='recombination'`, a recombination landscape plot is generated for the whole dataset,
       based on the haplotype predictions.
     """
+    if isinstance(max_yheight, str) and max_yheight != 'auto':
+        max_yheight = float(max_yheight)
+
     co_markers = load_json(marker_json_fn, cb_whitelist_fn=cb_whitelist_fn, bin_size=None)
     if pred_json_fn is not None:
         co_preds = load_json(

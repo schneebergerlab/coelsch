@@ -484,11 +484,12 @@ def ground_truth_from_marker_records(co_markers):
     return ground_truth
 
 
-def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
+def run_sim(marker_json_fn, pred_json_fn=None, output_json_fn=None, ground_truth_fn=None, *,
             cb_whitelist_fn=None, bin_size=25_000,
             min_markers_per_cb=100, min_markers_per_chrom=20,
             noise_fraction=None, nsim_per_sample=100, n_doublets=0.0,
-            thresholded=True, target_crossing_strategy=None, rng=DEFAULT_RNG):
+            thresholded=True, target_crossing_strategy=None, sim_cross_only=False,
+            rng=DEFAULT_RNG):
     """
     Run the full simulation pipeline to create synthetic marker data from ground truth.
 
@@ -520,6 +521,8 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
         If True, round source predictions and target ground truth dosage before simulation.
     target_crossing_strategy : str, optional
         Crossing strategy to simulate. If omitted, source records are aligned to ground truth.
+    sim_cross_only : bool, default=False
+        If True, only pool marker channels to ``target_crossing_strategy`` and skip simulation.
     rng : Generator, optional
         NumPy random generator.
 
@@ -529,13 +532,37 @@ def run_sim(marker_json_fn, pred_json_fn, output_json_fn, ground_truth_fn, *,
         Simulated marker data.
     """
     co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
-    co_preds = load_json(
-        pred_json_fn, cb_whitelist_fn, bin_size, data_type='predictions'
-    )
     if min_markers_per_cb or min_markers_per_chrom:
         co_markers = filter_low_coverage_barcodes(
             co_markers, min_markers_per_cb, min_markers_per_chrom
         )
+
+    if sim_cross_only:
+        if target_crossing_strategy is None:
+            raise ValueError('target_crossing_strategy is required when sim_cross_only=True')
+        sim_co_markers = simulate_crossing_strategy(
+            co_markers,
+            target_crossing_strategy,
+            rng=rng,
+        )
+        log.info(
+            'Pooled markers to crossing_strategy=%s',
+            sim_co_markers.experiment_params.crossing_strategy,
+        )
+        if output_json_fn is not None:
+            log.info(f'Writing markers to {output_json_fn}')
+            sim_co_markers.write_json(output_json_fn)
+        return sim_co_markers
+
+    if pred_json_fn is None:
+        raise ValueError('pred_json_fn is required unless sim_cross_only=True')
+    if ground_truth_fn is None:
+        raise ValueError('ground_truth_fn is required unless sim_cross_only=True')
+
+    co_preds = load_json(
+        pred_json_fn, cb_whitelist_fn, bin_size, data_type='predictions'
+    )
+    if min_markers_per_cb or min_markers_per_chrom:
         co_preds = co_preds.filter(co_markers.barcodes, inplace=False)
 
     if os.path.splitext(ground_truth_fn)[1] == '.bed':

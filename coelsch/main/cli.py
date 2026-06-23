@@ -1,12 +1,15 @@
+import logging
 import click
 from .opts import coelsch_opts
 
+log = logging.getLogger('coelsch')
 
 @click.group()
 @click.version_option()
 def main():
     '''
-    coelsch: a toolkit for performing crossover mapping from single nucleus RNA/ATAC sequencing data
+    coelsch: a toolkit for performing single cell and progeny-resequencing based
+    crossover and haplotyping analysis
     '''
     pass
 
@@ -104,8 +107,7 @@ def stats_subcommand(**kwargs):
 @coelsch_opts('segdist')
 def segdist_subcommand(**kwargs):
     '''
-    Scores the quality of data and predictions for a set of haplotype calls
-    generated with `predict`.
+    Measures deviations in inheritance from expected mendelian patterns
     '''
     from coelsch.distortion import run_segdist
     run_segdist(**kwargs)
@@ -175,3 +177,13 @@ def csl_pipeline_subcommand(**kwargs):
     loadcsl_kwargs['output_json_fn'] = f'{output_prefix}.markers_init.json'
     co_markers = run_loadcsl(**loadcsl_kwargs)
     _clean_predict_pipeline(co_markers, output_prefix, kwargs)
+
+
+@main.command('alaaf')
+@coelsch_opts('alaaf')
+def alaaf(**kwargs):
+    '''
+    How to cite coelsch
+    '''
+    from .utils import kolle_alaaf
+    log.info(kolle_alaaf())

@@ -45,7 +45,7 @@ coelsch_opts.option(
     '-v', '--verbosity',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
                  'sim', 'concat', 'clean', 'predict',
-                 'doublet', 'stats', 'plot', 'segdist'],
+                 'doublet', 'stats', 'plot', 'segdist', 'alaaf'],
     required=False,
     expose_value=False,
     metavar='LVL',

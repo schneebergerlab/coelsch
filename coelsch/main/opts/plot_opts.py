@@ -62,9 +62,9 @@ coelsch_opts.option(
     '--max-yheight',
     subcommands=['plot'],
     required=False,
-    type=click.IntRange(5, 1000),
-    default=20,
-    help='maximum number of markers per bin to plot, higher values are thresholded (markerplot)'
+    type=str,
+    default='auto',
+    help='maximum number of markers per bin to plot, or auto to scale to the dataset (markerplot)'
 )
 
 

@@ -11,7 +11,7 @@ from pomegranate.hmm import DenseHMM
 
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 from .dists import NegativeBinomial, ZeroInflated
-from .utils import sorted_edit_distance, mask_array_zeros, numpy_to_torch
+from . import utils
 
 
 log = logging.getLogger('coelsch')
@@ -178,25 +178,45 @@ class RigidHMM:
         return self._state_haplotype_dosage
 
     def _create_distribution(self, state_idx):
-        priors = [self.bg_params['empty_fraction']] * self.n_haplotypes
-        if self.dist_type == 'poisson':
-            lambdas = [self.bg_params['lambda']] * self.n_haplotypes
+
+        def param_vector(params, key):
+            value = np.asarray(params[key], dtype=float)
+
+            if value.ndim == 0:
+                return np.full(self.n_haplotypes, float(value), dtype=float)
+
+            if value.shape != (self.n_haplotypes,):
+                raise ValueError(
+                    f"{key} has shape {value.shape}, expected scalar or "
+                    f"({self.n_haplotypes},)"
+                )
+
+            return value.copy()
+
+        priors = param_vector(self.bg_params, "empty_fraction")
+
+        if self.dist_type == "poisson":
+            lambdas = param_vector(self.bg_params, "lambda")
         else:
-            means = [self.bg_params['mean']] * self.n_haplotypes
-            alphas = [self.bg_params['alpha']] * self.n_haplotypes
+            means = param_vector(self.bg_params, "mean")
+            alphas = param_vector(self.bg_params, "alpha")
+
         for hap, count in enumerate(self.state_haplotype_dosage[state_idx]):
             if count <= 0:
                 continue
-            priors[hap] = self.fg_params['empty_fraction']
+
+            priors[hap] = param_vector(self.fg_params, "empty_fraction")[hap]
+
             if self.dist_type == "poisson":
-                lambdas[hap] = self.fg_params["lambda"] * count
+                lambdas[hap] = param_vector(self.fg_params, "lambda")[hap] * count
             else:
-                means[hap] = self.fg_params['mean'] * count
-                alphas[hap] = self.fg_params['alpha']
-        if self.dist_type == 'poisson':
+                means[hap] = param_vector(self.fg_params, "mean")[hap] * count
+                alphas[hap] = param_vector(self.fg_params, "alpha")[hap]
+
+        if self.dist_type == "poisson":
             return ZeroInflated(pmd.Poisson(lambdas), priors=priors)
-        else:
-            return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
+
+        return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
 
     def _create_rigid_chain(self, state_idx):
         state = self.states[state_idx]
@@ -242,7 +262,7 @@ class RigidHMM:
                 if self._transition_probs[i].co:
                     for other in self.states:
                         # only connect states with edit dist 1 with crossovers
-                        if sorted_edit_distance(state, other) == 1:
+                        if utils.sorted_edit_distance(state, other) == 1:
                             self._model.add_edge(
                                 self._distributions[state][i],
                                 self._distributions[other][0],
@@ -300,10 +320,10 @@ class RigidHMM:
         proba = []
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
             batch_size, chrom_size = X_batch.shape[:2]
-            X_batch = numpy_to_torch(X_batch)
+            X_batch = utils.numpy_to_torch(X_batch)
             if self._device is not None:
                 X_batch = X_batch.to(self._device)
-            p_batch = self._model.predict_proba(X_batch).cpu().numpy()
+            p_batch = utils.torch_to_numpy(self._model.predict_proba(X_batch))
             if np.isnan(p_batch).any():
                 log.warn(
                     'At least one sample is impossible under the rHMM. '
@@ -364,10 +384,10 @@ class RigidHMM:
         logp = []
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
             batch_size, chrom_size = X_batch.shape[:2]
-            X_batch = numpy_to_torch(X_batch)
+            X_batch = utils.numpy_to_torch(X_batch)
             if self._device is not None:
                 X_batch = X_batch.to(self._device)
-            lp_batch = self._model.log_probability(X_batch).cpu().numpy()
+            lp_batch = utils.torch_to_numpy(self._model.log_probability(X_batch))
             if np.isnan(lp_batch).any():
                 log.warn(
                     'At least one sample is impossible under the rHMM. '
@@ -423,7 +443,7 @@ class RigidHMM:
         offset = 0
 
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
-            X_batch = numpy_to_torch(X_batch)
+            X_batch = utils.numpy_to_torch(X_batch)
             X_batch = X_batch.to(self._device, dtype=torch.float32)
             n_batch = X_batch.shape[0]
 
@@ -474,14 +494,15 @@ class RigidHMM:
                         )
                     log_p = torch.log_softmax(log_p, dim=1)
                     z[:, k, t] = torch.multinomial(torch.exp(log_p.double()), 1, generator=rng).squeeze(1)
-            z = (z // rfactor).to(torch.int16).cpu().numpy()
-            X_samples[offset:offset + n_batch] = z
+            z = (z // rfactor).to(torch.int16)
+            X_samples[offset:offset + n_batch] = utils.torch_to_numpy(z)
             offset += n_batch
 
         return X_samples
 
     @property
     def params(self):
+        n = self.n_haplotypes
         return {
             'states': [list(s) for s in self.states],
             'n_haplotypes': float(self.n_haplotypes),
@@ -490,14 +511,14 @@ class RigidHMM:
             'trans_prob': float(self.trans_prob),
             'trans_prob_decay_rate': float(self.trans_prob_decay_rate),
             'is_poisson': 1.0 if self.dist_type == 'poisson' else 0.0,
-            'fg_lambda': self.fg_params['lambda'] if self.dist_type == 'poisson' else np.nan,
-            'bg_lambda': self.bg_params['lambda'] if self.dist_type == 'poisson' else np.nan,
-            'fg_mean': self.fg_params['mean'] if self.dist_type == 'nb' else np.nan,
-            'bg_mean': self.bg_params['mean'] if self.dist_type == 'nb' else np.nan,
-            'fg_alpha': self.fg_params['alpha'] if self.dist_type == 'nb' else np.nan,
-            'bg_alpha': self.bg_params['alpha'] if self.dist_type == 'nb' else np.nan,
-            'fg_empty_fraction': self.fg_params['empty_fraction'],
-            'bg_empty_fraction': self.bg_params['empty_fraction']
+            'fg_lambda': list(self.fg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
+            'bg_lambda': list(self.bg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
+            'fg_mean': list(self.fg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
+            'bg_mean': list(self.bg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
+            'fg_alpha': list(self.fg_params['alpha']) if self.dist_type == 'nb' else [np.nan,] * n,
+            'bg_alpha': list(self.bg_params['alpha']) if self.dist_type == 'nb' else [np.nan,] * n,
+            'fg_empty_fraction': list(self.fg_params['empty_fraction']),
+            'bg_empty_fraction': list(self.bg_params['empty_fraction'])
         }
 
     @classmethod
@@ -511,23 +532,23 @@ class RigidHMM:
             raise ValueError(msg)
         if params['is_poisson']:
             fg_params = {
-                'lambda': params['fg_lambda'],
-                'empty_fraction': params['fg_empty_fraction']
+                'lambda': np.array(params['fg_lambda']),
+                'empty_fraction': np.array(params['fg_empty_fraction'])
             }
             bg_params = {
-                'lambda': params['bg_lambda'],
-                'empty_fraction': params['bg_empty_fraction']
+                'lambda': np.array(params['bg_lambda']),
+                'empty_fraction': np.array(params['bg_empty_fraction'])
             }
         else:
             fg_params = {
-                'mean': params['fg_mean'],
-                'alpha': params['fg_alpha'],
-                'empty_fraction': params['fg_empty_fraction']
+                'mean': np.array(params['fg_mean']),
+                'alpha': np.array(params['fg_alpha']),
+                'empty_fraction': np.array(params['fg_empty_fraction'])
             }
             bg_params = {
-                'mean': params['bg_mean'],
-                'alpha': params['bg_alpha'],
-                'empty_fraction': params['bg_empty_fraction']
+                'mean': np.array(params['bg_mean']),
+                'alpha': np.array(params['bg_alpha']),
+                'empty_fraction': np.array(params['bg_empty_fraction'])
             }
         n_haplotypes = params.get('n_haplotypes')
         if n_haplotypes is None:

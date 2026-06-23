@@ -133,6 +133,6 @@ def detect_heterozygous_bins(X_ordered, window=40):
         smoothed = smooth_counts_sum(x, window)
         # test the ratio of the fg and bg count sums.
         # In hom/het bins they should be 2:0 vs 1:1 respectively
-        mask = smoothed[:, 0] < 2 * smoothed[:, 1]
+        mask = smoothed[:, 0] < 4 * smoothed[:, 1]
         heterozygous_mask.append(mask)
     return heterozygous_mask

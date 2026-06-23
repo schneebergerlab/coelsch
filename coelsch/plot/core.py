@@ -2,6 +2,7 @@
 Shared plotting utilities for coelsch.
 """
 import re
+import itertools as it
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -14,7 +15,7 @@ DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 XLIM_OFFSET = 1e4
 
 
-def chrom_subplots(chrom_sizes, figsize=(18, 5), xtick_every=1e7, xbuffer=5e5,
+def chrom_subplots(chrom_sizes, nrows=1, figsize=(18, 5), xtick_every=1e7, xbuffer=5e5,
                    span_features=None, span_kwargs=None):
     """
     Create correctly proportioned subplots for individual chromosomes.
@@ -23,6 +24,8 @@ def chrom_subplots(chrom_sizes, figsize=(18, 5), xtick_every=1e7, xbuffer=5e5,
     ----------
     chrom_sizes : dict
         Dictionary with chromosome names as keys and chromosome sizes as values (in base pairs).
+    nrows : int
+        The number of rows of axes to produce.
     figsize : tuple, optional
         Figure size (width, height) in inches. Default is (18, 5).
     xtick_every : float, optional
@@ -42,20 +45,22 @@ def chrom_subplots(chrom_sizes, figsize=(18, 5), xtick_every=1e7, xbuffer=5e5,
     fig, axes = plt.subplots(
         figsize=figsize,
         ncols=len(chrom_sizes),
+        nrows=nrows,
         width_ratios=list(chrom_sizes.values()),
         sharey='row',
-        sharex='col'
+        sharex='col',
+        squeeze=False,
     )
-    if len(chrom_sizes) == 1 and isinstance(axes, mpl.axes.Axes):
-        axes = [axes,]
 
-    for chrom, ax in zip(chrom_sizes, axes):
-        ax.set_xlim(-xbuffer, chrom_sizes[chrom] + xbuffer)
-        xticks = np.arange(0, chrom_sizes[chrom], xtick_every)
-        ax.set_xticks(xticks)
-        ax.set_xticklabels([int(i // 1e6) for i in xticks])
-        chrom_label = re.sub('^[Cc]hr', '', chrom)
-        ax.set_xlabel(f'Chromosome {chrom_label} (Mb)')
+    for i, row in enumerate(axes, 1):
+        for chrom, ax in zip(chrom_sizes, row):
+            ax.set_xlim(-xbuffer, chrom_sizes[chrom] + xbuffer)
+            xticks = np.arange(0, chrom_sizes[chrom], xtick_every)
+            ax.set_xticks(xticks)
+            ax.set_xticklabels([int(i // 1e6) for i in xticks])
+            if i == nrows:
+                chrom_label = re.sub('^[Cc]hr', '', chrom)
+                ax.set_xlabel(f'Chromosome {chrom_label} (Mb)')
 
     if span_features is not None:
 
@@ -65,9 +70,10 @@ def chrom_subplots(chrom_sizes, figsize=(18, 5), xtick_every=1e7, xbuffer=5e5,
         else:
             span_kwargs = default_span_kwargs
 
-        for chrom, ax in zip(chrom_sizes, axes):
-            for s, e in span_features.get(chrom, []):
-                ax.axvspan(s, e, **span_kwargs)
+        for row in axes:
+            for chrom, ax in zip(chrom_sizes, row):
+                for s, e in span_features.get(chrom, []):
+                    ax.axvspan(s, e, **span_kwargs)
 
     plt.tight_layout()
     return fig, axes

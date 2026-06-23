@@ -112,8 +112,28 @@ def validate_pred_input(kwargs):
     bin_size = kwargs.get('bin_size')
     seg_size = kwargs.get('segment_size')
     tseg_size = kwargs.get('terminal_segment_size')
+    if kwargs.get('independent_meioses', None) is None:
+        kwargs['independent_meioses'] = 'auto'
     if seg_size < bin_size:
         log.error("'-R' / '--segment-size' cannot be less than '-N' / '--bin-size'")
     if tseg_size < bin_size:
         log.error("'-t' / '--terminal-segment-size' cannot be less than '-N' / '--bin-size'")
+    return kwargs
+
+
+def validate_sim_input(kwargs):
+    """decorator to validate the input of the sim command"""
+    sim_cross_only = kwargs.get('sim_cross_only')
+    target = kwargs.get('target_crossing_strategy')
+    pred_json_fn = kwargs.get('pred_json_fn')
+    ground_truth_fn = kwargs.get('ground_truth_fn')
+
+    if sim_cross_only:
+        if target is None:
+            log.error('--target-crossing-strategy is required with --sim-cross-only')
+    else:
+        if pred_json_fn is None:
+            log.error('PRED_JSON_FN is required unless --sim-cross-only is used')
+        if ground_truth_fn is None:
+            log.error('--ground-truth-fn is required unless --sim-cross-only is used')
     return kwargs

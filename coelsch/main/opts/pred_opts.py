@@ -64,7 +64,7 @@ coelsch_opts.option(
     '--independent-meioses/--joint-meioses',
     subcommands=['predict', 'bam2pred', 'csl2pred'],
     required=False,
-    default='auto',
+    default=None,
     help=(
         'Run independent haploid HMMs over separable meioses where supported. '
         'By default this is enabled for four_way founder designs and disabled otherwise.'

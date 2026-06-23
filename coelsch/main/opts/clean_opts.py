@@ -105,6 +105,15 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--sim-cross-only/--no-sim-cross-only',
+    subcommands=['sim'],
+    required=False,
+    default=False,
+    help='Only pool marker channels to the target crossing strategy; skip prediction/ground-truth simulation.'
+)
+
+
+coelsch_opts.option(
     '--min-markers-per-cb',
     subcommands=['loadbam', 'loadcsl', 'clean', 'sim', 'bam2pred', 'csl2pred'],
     required=False,

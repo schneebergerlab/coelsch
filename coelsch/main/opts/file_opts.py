@@ -46,8 +46,17 @@ coelsch_opts.argument(
 
 coelsch_opts.argument(
     'pred-json-fn',
-    subcommands=['sim', 'doublet', 'stats', 'segdist'],
+    subcommands=['doublet', 'stats', 'segdist'],
     required=True,
+    nargs=1,
+    type=_input_file_type,
+)
+
+
+coelsch_opts.argument(
+    'pred-json-fn',
+    subcommands=['sim'],
+    required=False,
     nargs=1,
     type=_input_file_type,
 )
@@ -150,7 +159,8 @@ coelsch_opts.option(
 coelsch_opts.option(
     '-g', '--ground-truth-fn',
     subcommands=['sim'],
-    required=True,
+    required=False,
     type=_input_file_type,
+    default=None,
     help='pred json or bed file (6 column) containing ground truth haplotype intervals to simulate'
 )

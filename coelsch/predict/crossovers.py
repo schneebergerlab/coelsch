@@ -7,6 +7,7 @@ import torch
 
 from .rhmm.utils import mask_array_zeros
 from .gt_assignment import assign_co_samples_to_gt
+from .utils import co_switch_resolver
 from ..records import PredictionRecords, NestedData, NestedDataArray
 from coelsch.main.logger import progress_bar
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -15,61 +16,34 @@ log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
-def _transition_event(old_state, new_state, experiment_params):
-    changed_pos = next(
-        i for i, (old_hap, new_hap) in enumerate(zip(old_state, new_state))
-        if old_hap != new_hap
-    )
-
-    if experiment_params.crossing_strategy == 'f2':
-        return -1, int(np.sign(sum(new_state) - sum(old_state)))
-
-    sign = int(np.sign(new_state[changed_pos] - old_state[changed_pos]))
-
-    if experiment_params.ploidy == 1 or experiment_params.genotyping_strategy == 'recombinant':
-        meiosis = 0
-    elif experiment_params.crossing_strategy in {'backcross', 'testcross'}:
-        meiosis = 1
-    elif experiment_params.crossing_strategy in {'three_way', 'four_way'}:
-        meiosis = changed_pos
-    else:
-        meiosis = 0
-
-    return meiosis, sign
+import numpy as np
 
 
-def samples_to_crossover_events(state_samples, states, experiment_params):
+def samples_to_crossover_events(hap_samples, experiment_params):
     """
-    Convert sampled HMM state paths to crossover event arrays.
+    Convert sampled HMM haplotype paths to crossover event arrays.
 
     Each event row is ``[bin_idx, meiosis, sign]``. ``meiosis`` is -1 for
     unphased F2 transitions, 0 for haploid/recombinant transitions, 1 for the
     segregating backcross/testcross meiosis, and the changed tuple position for
     three-way/four-way transitions.
     """
-    n_seq, n_samples, _ = state_samples.shape
-    states = tuple(tuple(state) for state in states)
+
+    n_seq, n_samples, _, n_haps = hap_samples.shape
     events = []
 
-    for i in range(n_seq):
+    co_iter = co_switch_resolver(experiment_params)
+
+    for seq in hap_samples:
         seq_events = []
-        for sample_idx in range(n_samples):
-            path = state_samples[i, sample_idx]
-            positions = np.nonzero(np.diff(path))[0]
+        for samp in seq:
             sample_events = []
-            for bin_idx in positions:
-                old_idx = path[bin_idx]
-                new_idx = path[bin_idx + 1]
-                meiosis, sign = _transition_event(
-                    states[old_idx],
-                    states[new_idx],
-                    experiment_params,
-                )
-                sample_events.append((bin_idx, meiosis, sign))
+            for bin_idx, from_hap_idx, to_hap_idx in co_iter(samp):
+                sample_events.append((bin_idx, from_hap_idx, to_hap_idx))
             if sample_events:
                 sample_events = np.asarray(sample_events, dtype=np.int32)
             else:
-                sample_events = np.empty((0, 3), dtype=np.int32)
+                sample_events = np.empty((0, 4), dtype=np.int32)
             seq_events.append(sample_events)
         events.append(seq_events)
 
@@ -113,6 +87,7 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
         item_show_func=str,
         hidden=not show_progress
     )
+    import click
     logprobs = Counter()
     with chrom_progress:
         for chrom in chrom_progress:
@@ -126,11 +101,7 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
                 logprobs[cb] += lp
             if sample_paths:
                 X_samp = rhmm.sample(X, n=n_samples, batch_size=batch_size, rng=rng)
-                events = samples_to_crossover_events(
-                    X_samp,
-                    rhmm.states,
-                    co_markers.experiment_params,
-                )
+                events = samples_to_crossover_events(X_samp, co_markers.experiment_params)
                 for cb, cb_events in zip(seen_barcodes, events):
                     for samp, sample_events in enumerate(cb_events):
                         crossover_samples[cb, chrom, str(samp)] = sample_events

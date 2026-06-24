@@ -356,11 +356,19 @@ class NestedData:
         for key in self.keys():
             yield key, self[key]
 
-    def deep_items(self):
+    def deep_items(self, max_depth=None):
         n = self.nlevels
 
+        if max_depth is None:
+            max_depth = n
+
+        if max_depth < 0:
+            raise ValueError("max_depth must be >= 0")
+
+        max_depth = min(max_depth, n)
+
         def _recursive_items(obj, depth, key_path):
-            if depth == n:
+            if depth == max_depth:
                 yield key_path, obj
             else:
                 for key, val in obj.items():

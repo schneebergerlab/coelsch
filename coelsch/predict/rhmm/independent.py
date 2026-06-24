@@ -1,6 +1,7 @@
 """
 Independent-meiosis wrapper models for rigid HMM prediction.
 """
+import logging
 from functools import reduce
 import numpy as np
 import torch
@@ -8,7 +9,7 @@ import torch
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 from .model import RigidHMM
 
-
+log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 DEFAULT_DEVICE = torch.device('cpu')
 
@@ -156,14 +157,19 @@ class IndependentMeiosesHMM:
             batch_size=batch_size,
             rng=rng,
         )
-        # TODO fix this for threeway
-        return (s0 * 2 + s1).astype(np.int16)
+        sample = np.zeros((*s0.shape[:-1], self.n_haplotypes), dtype=s0.dtype)
+        sample[..., self.meioses[0]] += s1
+        sample[..., self.meioses[1]] += s1
+        return sample
 
     @property
     def params(self):
         n = self.n_haplotypes
+
+
         params = {
             'is_independent_meioses': 1.0,
+            'crossing_strategy': 3.0 if self.crossing_strategy == 'three_way' else 4.0,
             'states': [list(s) for s in self.states],
             'n_haplotypes': float(self.n_haplotypes),
             'rfactor': float(self.rfactor),
@@ -186,13 +192,6 @@ class IndependentMeiosesHMM:
     def from_params(cls, params, device=None):
         if not params.get('is_independent_meioses'):
             raise ValueError('params do not describe an IndependentMeiosesHMM')
-        if params.get('is_independent_meioses'):
-            msg = (
-                'These parameters describe an IndependentMeiosesHMM; use '
-                'IndependentMeiosesHMM.from_params instead of RigidHMM.from_params'
-            )
-            log.warning(msg)
-            raise ValueError(msg)
         if params['is_poisson']:
             fg_params = {
                 'lambda': np.array(params['fg_lambda']),
@@ -217,8 +216,14 @@ class IndependentMeiosesHMM:
         if n_haplotypes is None:
             n_haplotypes = max(hap for state in params['states'] for hap in state) + 1
 
+        if int(params['crossing_strategy']) == 3:
+            crossing_strategy = 'three_way'
+        elif int(params['crossing_strategy']) == 4:
+            crossing_strategy = 'four_way'
+        else:
+            return NotImplemented
         return cls(
-            params['meioses'], params['rfactor'], params['term_rfactor'],
+            crossing_strategy, params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
             trans_prob_decay_rate=params['trans_prob_decay_rate'],

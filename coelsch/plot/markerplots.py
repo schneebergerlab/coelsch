@@ -156,7 +156,7 @@ def _markerplot_ylabel(co_markers, cb, ref_idx, alt_idx, alt2_idx=None):
         label =f'{genotype.founders[ref_idx]} vs {genotype.founders[alt_idx]}'
         if alt2_idx is not None:
             label += f'/{genotype.founders[alt2_idx]}'
-    return f'Informative read coverage\n{label}'
+    return label
 
 
 def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), chroms=None,
@@ -235,16 +235,22 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
                             [ylims[0], 0],
                             alt_cmap, norm
                         )
-                if annotate_co_number and row_idx == 0:
+                if annotate_co_number:
+                    idxs = (ref_idx, alt_idx, alt2_idx) if alt2_idx else (ref_idx, alt_idx)
                     n_co = n_crossovers(
-                        {chrom: co_preds[cb, chrom]},
+                        {chrom: co_preds[cb, chrom, :, idxs]},
                         min_co_prob=nco_min_prob_change,
                     )
-                    ax.annotate(text=f'{n_co:.2f} COs', xy=(0.05, 0.05), xycoords='axes fraction')
+                    ax.annotate(
+                        text=f'{n_co:.2f} COs',
+                        xy=(0.05, 0.05),
+                        xycoords='axes fraction'
+                    )
             if show_gt and row_idx == 0:
                 _add_gt_vlines(
                     ax, gt[chrom], co_markers.bin_size, ylims
                 )
+    fig.supylabel('Informative read coverage')
     plt.tight_layout()
     return fig, axes[0] if nrows == 1 else axes
 

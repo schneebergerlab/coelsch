@@ -452,7 +452,7 @@ class RigidHMM:
                 return x._masked_data
             return x
 
-        X_samples = np.empty((n_seq, n, n_bins), dtype=np.int16)
+        X_samples = np.empty((n_seq, n, n_bins, n_haps), dtype=np.int16)
         offset = 0
 
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
@@ -507,8 +507,10 @@ class RigidHMM:
                         )
                     log_p = torch.log_softmax(log_p, dim=1)
                     z[:, k, t] = torch.multinomial(torch.exp(log_p.double()), 1, generator=rng).squeeze(1)
-            z = (z // rfactor).to(torch.int16)
-            X_samples[offset:offset + n_batch] = utils.torch_to_numpy(z)
+            z = utils.torch_to_numpy(
+                (z // rfactor).to(torch.int16)
+            )
+            X_samples[offset:offset + n_batch] = self.state_haplotype_dosage[z]
             offset += n_batch
 
         return X_samples

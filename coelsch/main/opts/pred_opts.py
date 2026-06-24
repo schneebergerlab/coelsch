@@ -76,7 +76,7 @@ coelsch_opts.option(
     '--sample-co-locs/--no-sample-cos', 'sample_paths',
     subcommands=['predict', 'bam2pred', 'csl2pred'],
     required=False,
-    default=False,
+    default=True,
     help='Whether to sample stochastic crossover locations for each barcode'
 )
 

@@ -203,6 +203,27 @@ class ExperimentParams:
         return states[self.crossing_strategy]
 
     @property
+    def recombining_haplotypes(self):
+        """
+        a list of pairs of haplotypes that can recombine with each other according
+        to the experimental design
+        """
+        if self.genotyping_strategy == "recombinant":
+            # recombinant genotyping always collapses to two haplotypes
+            return [(0, 1),]
+
+        states = {
+            "f1": [(0, 1),],
+            "f2": [(0, 1),],
+            "backcross": [(0, 1),],
+            "testcross": [(1, 2),],
+            "three_way": [(0, 1), (0, 2)],
+            "four_way": [(0, 1), (2, 3)]
+        }
+
+        return states[self.crossing_strategy]
+
+    @property
     def n_haplotype_states(self):
         """
         number of haplotype state columns to create in in prediction records

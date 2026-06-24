@@ -8,6 +8,7 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 import matplotlib as mpl
 
+from coelsch.experiment.genotypes import GenotypeKey
 from coelsch.recombination import recombination_landscape, coefficient_of_coincidence
 from coelsch.distortion import segregation_distortion
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -18,13 +19,23 @@ from .core import chrom_subplots, chrom2dtriangle_subplots
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
+def _append_track_label(group, track_label, apply_by):
+    base_label = None
+    if apply_by != 'none':
+        base_label = str(group)
+    if base_label and track_label:
+        return f'{base_label}: {track_label}'
+    if base_label:
+        return base_label
+    return track_label
+
+
 def plot_recombination_landscape(co_preds, co_markers=None,
                                  apply_by='none',
                                  rolling_mean_window_size=1_000_000,
                                  nboots=100, ci=95,
                                  min_prob=5e-3,
                                  axes=None,
-                                 colour=None,
                                  figsize=(12, 4),
                                  rng=DEFAULT_RNG):
     """
@@ -90,11 +101,11 @@ def plot_recombination_landscape(co_preds, co_markers=None,
         track_colours = {}
         for track_key, track_cm_per_mb in group_cm_per_mb.items():
             track_label = None if track_key == 'haplotype' else track_key
-            plot_label = _append_track_label(group, track_label, apply_by, None)
+            plot_label = _append_track_label(group, track_label, apply_by)
             for chrom, ax in zip(track_cm_per_mb, axes):
                 x = np.arange(0, co_preds.nbins[chrom]) * co_preds.bin_size
                 c = track_cm_per_mb[chrom]
-                curr_colour = track_colours.get(plot_label, colour)
+                curr_colour = track_colours.get(plot_label, None)
                 line, = ax.step(x, np.nanmean(c, axis=0), color=curr_colour)
                 curr_colour = line.get_color()
                 track_colours[plot_label] = curr_colour
@@ -117,25 +128,11 @@ def plot_recombination_landscape(co_preds, co_markers=None,
     return fig, axes
 
 
-def _append_track_label(group, track_label, apply_by, label):
-    base_label = label
-    if base_label is None and apply_by != 'none':
-        base_label = str(group)
-
-    if base_label and track_label:
-        return f'{base_label}: {track_label}'
-    if base_label:
-        return base_label
-    return track_label
-
-
 def plot_allele_ratio(co_preds,
                       apply_by='none',
                       nboots=100, ci=95,
                       axes=None,
                       figsize=(12, 4),
-                      colour=None,
-                      label=None,
                       rng=DEFAULT_RNG):
     """
     Plot the allele ratio across chromosomes for multiple cells with bootstrapped confidence intervals.
@@ -155,11 +152,6 @@ def plot_allele_ratio(co_preds,
         The axes to plot on. If None, new axes are created. Default is None.
     figsize : tuple, optional
         The size of the figure (width, height) in inches. Default is (12, 4).
-    colour : str, optional
-        The colour to use for the plot lines and fills. If None, a colour is selected from the default palette.
-        Default is None.
-    label : str, optional
-        The label for the plot legend. If None, no legend is added. Default is None.
     rng : numpy.random.Generator, optional
         The random number generator to use for bootstrapping. Default is `DEFAULT_RNG`.
 
@@ -194,8 +186,8 @@ def plot_allele_ratio(co_preds,
                 for _ in range(nboots):
                     idx = rng.integers(0, N, size=N)
                     c.append(haps[idx].mean(axis=0))
-                plot_label = _append_track_label(group, track_label, apply_by, label)
-                curr_colour = track_colours.get(plot_label, colour)
+                plot_label = _append_track_label(group, track_label, apply_by)
+                curr_colour = track_colours.get(plot_label, None)
                 line, = ax.step(x, np.nanmean(c, axis=0), color=curr_colour)
                 curr_colour = line.get_color()
                 track_colours[plot_label] = curr_colour
@@ -369,9 +361,14 @@ def plot_segregation_distortion(co_preds, cb_whitelist=None,
 
 
 def plot_coefficient_of_coincidence(co_preds,
-                                    apply_per_geno=False, nboots=100, ci=95,
-                                    min_dist=None, max_dist=None, step_size=1e6,
-                                    only_adjacent=False, chroms=None, show_L_int=True,
+                                    apply_by='none',
+                                    nboots=100, ci=95,
+                                    min_dist=None,
+                                    max_dist=None,
+                                    step_size=1e6,
+                                    only_adjacent=False,
+                                    chroms=None,
+                                    show_L_int=True,
                                     axes=None,
                                     figsize=(12, 4),
                                     rng=DEFAULT_RNG):
@@ -382,9 +379,9 @@ def plot_coefficient_of_coincidence(co_preds,
     ----------
     co_preds : PredictionRecords
         haplotype predictions object with metadata slot crossover_samples
-    apply_per_geno : bool, optional
-        If True, group ``co_preds`` by genotype and plot one curve per group.
-        Ignored if genotype metadata is missing.
+    apply_by : str or func, optional
+        How to group barcodes for allele ratio calculation/plotting. Can be "none", "genotype" or a function
+        that is passed to PredictionRecords.groupby. Default is "none".
     nboots : int, optional
         Number of bootstrap replicates used to estimate the CoC distribution.
     ci : float, optional
@@ -435,44 +432,63 @@ def plot_coefficient_of_coincidence(co_preds,
             fig, axes = chrom_subplots(chrom_sizes, figsize=figsize)
         else:
             fig, axes = chrom_subplots({chrom: max_dist for chrom in chrom_sizes}, figsize=figsize)
+        if axes.ndim == 2:
+            axes = axes[0]
     else:
         fig = plt.gcf()
         assert len(axes) == len(chrom_sizes)
         if len(co_preds.chrom_sizes) == 1 and isinstance(axes, mpl.axes.Axes):
             axes = [axes,]
 
-
-    if not 'genotypes' in co_preds.metadata:
-        apply_per_geno = False
-
     lower = (100 - ci) / 2
     upper = 100 - lower
 
-    for geno, geno_co_preds in co_preds.groupby('genotype' if apply_per_geno else 'none'):
-        N = len(geno_co_preds)
-        colour = None
-        geno_coc, x, l_int = coefficient_of_coincidence(
-            geno_co_preds, nboots=nboots, chroms=chroms, only_adjacent=only_adjacent,
+    legend_entries = {}
+    for group, group_co_preds in co_preds.groupby(apply_by):
+
+        group_coc, x, l_int = coefficient_of_coincidence(
+            group_co_preds, nboots=nboots, chroms=chroms, only_adjacent=only_adjacent,
             min_dist=min_dist, max_dist=max_dist, step_size=step_size,
         )
-        for chrom, ax in zip(chrom_sizes, axes):
-            line, = ax.plot(x[chrom], np.nanmean(geno_coc[chrom], axis=0), color=colour)
-            colour = line.get_color()
-            ax.fill_between(
-                x=x[chrom],
-                y1=np.nanpercentile(geno_coc[chrom], lower, axis=0),
-                y2=np.nanpercentile(geno_coc[chrom], upper, axis=0),
-                alpha=0.25,
-                color=colour
-            )
-            if show_L_int:
-                ax.axvline(np.nanmean(l_int[chrom]), color=colour)
-                ax.axvspan(np.nanpercentile(l_int[chrom], lower),
-                           np.nanpercentile(l_int[chrom], upper),
-                           color=colour, alpha=0.25, zorder=0)
 
-        if apply_per_geno:
-            axes[-1].plot([], [], color=colour, label=geno)
+        meioses = sorted(group_coc) # list of (hap1, hap2) pairs
+        if len(meioses) == 1:
+            track_labels = [None,]
+        elif len(meioses) == 2:
+            track_labels = ['parent1', 'parent2']
+        else:
+            raise ValueError()
+
+        track_colours = {}
+        for chrom, ax in zip(group_co_preds.chrom_sizes, axes):
+            for meiosis, track_label in zip(meioses, track_labels):
+                meiosis_coc = group_coc[meiosis][chrom]
+                plot_label = _append_track_label(group, track_label, apply_by)
+                curr_colour = track_colours.get(plot_label, None)
+                line, = ax.plot(x[chrom], np.nanmean(meiosis_coc, axis=0), color=curr_colour)
+                curr_colour = line.get_color()
+                track_colours[plot_label] = curr_colour
+                ax.fill_between(
+                    x=x[chrom],
+                    y1=np.nanpercentile(meiosis_coc, lower, axis=0),
+                    y2=np.nanpercentile(meiosis_coc, upper, axis=0),
+                    alpha=0.25,
+                    color=curr_colour
+                )
+                if show_L_int:
+                    ax.axvline(np.nanmean(l_int[meiosis][chrom]), color=curr_colour)
+                    ax.axvspan(np.nanpercentile(l_int[meiosis][chrom], lower),
+                               np.nanpercentile(l_int[meiosis][chrom], upper),
+                               color=curr_colour,
+                               alpha=0.25,
+                               zorder=0)
+                if plot_label is not None:
+                    legend_entries[plot_label] = curr_colour
+
+    if legend_entries:
+        for plot_label, curr_colour in legend_entries.items():
+            axes[-1].plot([], [], color=curr_colour, label=plot_label)
+        axes[-1].legend()
 
     for chrom, ax in zip(chrom_sizes, axes):
         ax.axhline(1, color='#252525', zorder=-1)
@@ -480,8 +496,6 @@ def plot_coefficient_of_coincidence(co_preds,
         ax.set_xlabel(f'{chrom} inter-CO distance (Mb)')
 
     axes[0].set_ylabel('Coefficient of coincidence')
-    if apply_per_geno:
-        axes[-1].legend(loc=2, title='Genotype')
     plt.tight_layout()
     return fig, axes
 

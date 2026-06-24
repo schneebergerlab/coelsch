@@ -1,22 +1,13 @@
 import numpy as np
 
 
-def co_switch_resolver(params):
-    DEFAULT_SWITCHES = {(0, 1), (1, 0)}
+def co_switch_resolver(experiment_params):
 
-    COMPLEX_SWITCHES = {
-        "testcross": {(1, 2), (2, 1)},
-        "three_way": {(0, 1), (1, 0), (0, 2), (2, 0)},
-        "four_way": {(0, 1), (1, 0), (2, 3), (3, 2)},
-    }
-
-    if params.genotyping_strategy != "founder":
-        allowed_switches = DEFAULT_SWITCHES
-    else:
-        allowed_switches = COMPLEX_SWITCHES.get(
-            params.crossing_strategy,
-            DEFAULT_SWITCHES,
-        )
+    recombining_haplotypes = experiment_params.recombining_haplotypes
+    allowed_switches = set()
+    for hap1, hap2 in recombining_haplotypes:
+        allowed_switches.add((hap1, hap2))
+        allowed_switches.add((hap2, hap1))
 
     def _err(b, before, after):
         return ValueError(

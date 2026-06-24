@@ -99,6 +99,22 @@ class GenotypeKey:
         raise TypeError("Expected GenotypeKey, str, or tuple")
 
     @classmethod
+    def get_dummy_geno(cls, experiment_params):
+        cs = experiment_params.crossing_strategy
+        if cs in ('f1', 'f2'):
+            return cls.from_str('(hap1*hap2)')
+        elif cs == 'backcross':
+            return cls.from_str('(hap1*(hap1*hap2))')
+        elif cs == 'testcross':
+            return cls.from_str('(hap1*(hap2*hap3))')
+        elif cs == 'three_way':
+            return cls.from_str('((hap1*hap2)*(hap1*hap3))')
+        elif cs == 'four_way':
+            return cls.from_str('((hap1*hap2)*(hap3*hap4))')
+        else:
+            return NotImplemented
+
+    @classmethod
     def _parse_expr_with_roles(cls, expr):
         tree, role_map, suffix, pos = cls._parse_node(expr, 0)
         pos = cls._skip_ws(expr, pos)

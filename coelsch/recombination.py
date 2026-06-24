@@ -392,26 +392,45 @@ def coefficient_of_coincidence(co_preds, nboots=100, min_dist=None, max_dist=Non
         raise ValueError('co_preds object lacking crossover_samples data')
     barcodes = co_pos_samples.get_level_keys('cb')
     sample_ids = co_pos_samples.get_level_keys('sample')
+    meioses = co_preds.experiment_params.recombining_haplotypes
     bootstrap_coc = {
-        chrom: np.empty((nboots, len(bins[chrom]) - 1), dtype=float)
-        for chrom in chroms
+        meiosis: {
+            chrom: np.empty((nboots, len(bins[chrom]) - 1), dtype=float)
+            for chrom in chroms
+        }
+        for meiosis in meioses
     }
+
     bootstrap_Lint = {
-        chrom : np.empty(nboots, dtype=float) for chrom in chroms
+        meiosis: {
+            chrom: np.empty(nboots, dtype=float)
+            for chrom in chroms
+        }
+        for meiosis in meioses
     }
     for i in range(nboots):
         # resample barcodes with replacement
         cb_sample = rng.choice(barcodes, size=nbarcodes, replace=True)
         samp_idx = rng.choice(sample_ids, size=nbarcodes, replace=True)
-        sample = defaultdict(list)
+        sample = {
+            meiosis: {chrom: [] for chrom in chroms}
+            for meiosis in meioses
+        }
         for cb, s in zip(cb_sample, samp_idx):
             for chrom in chroms:
-                # TODO: CoC currently pools crossover positions across meioses and ignores sign.
-                # For multi-meiosis designs this should probably be calculated per meiosis.
-                sample[chrom].append(co_pos_samples[cb, chrom, s, :, 0])
-        mids, coc, Lint = _coc_curve_sample(sample, bins, max_dist, only_adjacent=only_adjacent, rng=rng)
-        for chrom in chroms:
-            bootstrap_coc[chrom][i] = coc[chrom]
-            bootstrap_Lint[chrom][i] = Lint[chrom] * co_preds.chrom_sizes[chrom]
+                sample_events = co_pos_samples[cb, chrom, s]
+                if sample_events.size == 0:
+                    for meiosis in meioses:
+                        sample[meiosis][chrom].append(np.array([], dtype=float))
+                    continue
+                sample_meioses = np.sort(sample_events[:, (1, 2)], axis=1)
+                for hap1, hap2 in meioses:
+                    idx = (sample_meioses[:, 0] == hap1) & (sample_meioses[:, 1] == hap2)
+                    sample[(hap1, hap2)][chrom].append(sample_events[idx, 0])
+        for meiosis, meiosis_sample in sample.items():
+            mids, coc, Lint = _coc_curve_sample(meiosis_sample, bins, max_dist, only_adjacent=only_adjacent, rng=rng)
+            for chrom in chroms:
+                bootstrap_coc[meiosis][chrom][i] = coc[chrom]
+                bootstrap_Lint[meiosis][chrom][i] = Lint[chrom] * co_preds.chrom_sizes[chrom]
     mids = {chrom: m * bin_size for chrom, m in mids.items()}
     return bootstrap_coc, mids, bootstrap_Lint

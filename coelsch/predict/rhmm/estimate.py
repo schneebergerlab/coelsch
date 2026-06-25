@@ -6,7 +6,7 @@ from pomegranate import distributions as pmd
 from pomegranate.gmm import GeneralMixtureModel
 from pomegranate._utils import _update_parameter
 
-from coelsch.signal import smooth_counts_sum
+from coelsch.signal import approximate_haplotype_patterns
 from .dists import NegativeBinomial, ZeroInflated
 from . import utils
 
@@ -32,12 +32,6 @@ def _estimate_alpha(m, v):
     alpha = np.where(m <= 0, 0.1, alpha)
 
     return float(alpha) if alpha.ndim == 0 else alpha
-
-
-def _softmax(x, axis=-1):
-    x = x - np.max(x, axis=axis, keepdims=True)
-    ex = np.exp(x)
-    return ex / ex.sum(axis=axis, keepdims=True)
 
 
 def _shrink_to_shared(x, strength=1.0, fallback=1.0):
@@ -279,50 +273,6 @@ def _estimate_init_params_soft(
     return fg_mean, bg_mean, fg_alpha, bg_alpha
 
 
-def _haplotype_pattern_priors(
-    X,
-    component_dosages,
-    window=40,
-    temperature=0.05,
-    floor=0.02,
-):
-    component_dosages = np.asarray(component_dosages, dtype=float)
-
-    dosage_totals = component_dosages.sum(axis=1, keepdims=True)
-    if np.any(dosage_totals <= 0):
-        raise ValueError("all component dosage vectors must have non-zero dosage")
-
-    dosage_props = component_dosages / dosage_totals
-    priors = []
-
-    temperature = max(float(temperature), 1e-12)
-
-    for x in X:
-        x = utils.as_float_array(x)
-        smoothed = utils.as_float_array(smooth_counts_sum(x, window))
-
-        row_sum = smoothed.sum(axis=1, keepdims=True)
-        zero_rows = row_sum[:, 0] <= 0
-
-        obs_props = np.divide(
-            smoothed,
-            row_sum,
-            out=np.zeros_like(smoothed, dtype=float),
-            where=row_sum > 0,
-        )
-
-        dist2 = ((obs_props[:, None, :] - dosage_props[None, :, :]) ** 2).sum(axis=2)
-        p = _softmax(-dist2 / temperature, axis=1)
-
-        if np.any(zero_rows):
-            p[zero_rows] = 1.0 / component_dosages.shape[0]
-
-        p = (1.0 - floor) * p + floor / component_dosages.shape[0]
-        priors.append(p)
-
-    return np.concatenate(priors, axis=0)
-
-
 def _constrain_params(
     model,
     component_dosages,
@@ -499,48 +449,15 @@ def _fit_constrained_model(
 
 
 def _expected_component_dosages(X, experiment_params):
-    DOSAGES = {
-        'recombinant': np.array([
-            [1, 0],
-            [0, 1]
-        ]),
-        'f1': np.array([
-            [1, 0],
-            [0, 1]
-        ]),
-        'f2': np.array([
-            [2.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 2.0],
-        ]),
-        'backcross': np.array([
-            [2.0, 0.0],
-            [1.0, 1.0],
-        ]),
-        'testcross': np.array([
-            [1.0, 1.0, 0.0],
-            [1.0, 0.0, 1.0],
-        ]),
-        'three_way': np.array([
-            [2.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0],
-        ]),
-        'four_way': np.array([
-            [1.0, 0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0, 1.0],
-        ])
-    }
-
-    if experiment_params.genotyping_strategy == "recombinant":
-        component_dosages = DOSAGES['recombinant']
-        _require_n_haplotypes(X, component_dosages.shape[1], 'recombinant')
-    else:
-        component_dosages = DOSAGES[experiment_params.crossing_strategy]
-        _require_n_haplotypes(X, component_dosages.shape[1], experiment_params.crossing_strategy)
+    component_dosages = np.asarray(
+        experiment_params.haplotype_state_dosage_patterns,
+        dtype=float,
+    )
+    _require_n_haplotypes(
+        X,
+        component_dosages.shape[1],
+        experiment_params.crossing_strategy,
+    )
     return component_dosages
 
 
@@ -558,7 +475,7 @@ def estimate_emissions(
     component_dosages = _expected_component_dosages(X, experiment_params)
     X_flattened = utils.concat_arrays(X)
 
-    label_priors = _haplotype_pattern_priors(
+    label_priors = approximate_haplotype_patterns(
         X,
         component_dosages,
         window=window,

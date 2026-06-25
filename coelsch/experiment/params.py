@@ -231,14 +231,31 @@ class ExperimentParams:
         return len(self.haplotype_states)
 
     @property
+    def haplotype_state_dosage_patterns(self):
+        """
+        Haplotype dosage vector for each possible haplotype state.
+        """
+        patterns = []
+        seen = set()
+        for state in self.haplotype_states:
+            dosage = [0.0] * self.n_haplotypes
+            for hap in state:
+                dosage[hap] += 1.0
+            dosage = tuple(dosage)
+            if dosage not in seen:
+                seen.add(dosage)
+                patterns.append(dosage)
+        return tuple(patterns)
+
+    @property
     def haplotype_dosage(self):
         """
         Expected haplotype dosage under the crossing strategy.
         """
         dosage = [0.0] * self.n_haplotypes
-        for state in self.haplotype_states:
-            for hap in state:
-                dosage[hap] += 1
+        for pattern in self.haplotype_state_dosage_patterns:
+            for hap, value in enumerate(pattern):
+                dosage[hap] += value
         return tuple(d / len(self.haplotype_states) for d in dosage)
 
     def check_compatibility(self, genotype_key):

@@ -9,7 +9,7 @@ from coelsch.records import MarkerRecords, PredictionRecords, NestedDataArray
 from coelsch.experiment.params import ExperimentParams
 from coelsch.clean.filter import filter_low_coverage_barcodes
 from coelsch.defaults import DEFAULT_RANDOM_SEED
-from coelsch.stats import marker_agreement_fraction
+from coelsch.stats import marker_agreement_fraction, thresholded_dosage
 
 
 log = logging.getLogger('coelsch')
@@ -81,9 +81,14 @@ def read_ground_truth_haplotypes_bed(co_invs_fn, chrom_sizes, bin_size=25_000):
 
 def _ground_truth_dosage(ground_truth, sample_id, chrom, thresholded=True):
     dosage = ground_truth.get_haplotype_dosage(sample_id, chrom)
-    if thresholded:
-        dosage = np.round(dosage)
-    return dosage.astype(float, copy=False)
+
+    if not thresholded:
+        return dosage.astype(float, copy=False)
+
+    state_dosage = np.array(
+        ground_truth.experiment_params.haplotype_state_dosage_patterns
+    )
+    return thresholded_dosage(dosage, state_dosage)
 
 
 def _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=True):
@@ -95,6 +100,9 @@ def _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=True):
         co_markers[cb],
         source_dosage,
         thresholded=thresholded,
+        state_dosages=np.array(
+            co_markers.experiment_params.haplotype_state_dosage_patterns
+        )
     )
     if np.isnan(agreement):
         return 0.0
@@ -352,7 +360,10 @@ def simulate_singlets(co_markers, co_preds, ground_truth, nsim_per_sample,
                     cb_noise,
                     rng=rng,
                 )
-                sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage
+                if sim_co_markers.n_haplotypes == 2:
+                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage[:, 1]
+                else:
+                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage
 
     return sim_co_markers
 
@@ -553,6 +564,13 @@ def run_sim(marker_json_fn, pred_json_fn=None, output_json_fn=None, ground_truth
             log.info(f'Writing markers to {output_json_fn}')
             sim_co_markers.write_json(output_json_fn)
         return sim_co_markers
+
+    if n_doublets and not co_markers.experiment_params.supports_doublet_detection:
+        log.warning(
+            'Doublet simulation is not supported for sample_unit=%r; setting n_doublets=0',
+            co_markers.experiment_params.sample_unit,
+        )
+        n_doublets = 0.0
 
     if pred_json_fn is None:
         raise ValueError('pred_json_fn is required unless sim_cross_only=True')

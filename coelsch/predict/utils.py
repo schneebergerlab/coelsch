@@ -3,6 +3,8 @@ import numpy as np
 
 def co_switch_resolver(experiment_params):
 
+    ploidy = experiment_params.ploidy
+
     recombining_haplotypes = experiment_params.recombining_haplotypes
     allowed_switches = set()
     for hap1, hap2 in recombining_haplotypes:
@@ -45,6 +47,13 @@ def co_switch_resolver(experiment_params):
 
     def _iter_switches(x):
         x = np.asarray(x)
+
+        if x.ndim == 1:
+            x = np.stack(
+              [ploidy - x, x],
+              axis=1,
+            )
+
         d = np.diff(x, axis=0)
 
         for b in np.where(np.any(d != 0, axis=1))[0]:
@@ -78,7 +87,7 @@ def co_switch_resolver(experiment_params):
                 candidates = sorted(candidates)
                 h_from, h_to = candidates[0]
 
-                yield b, h_from, h_to
+                yield b + 1, h_from, h_to
 
                 delta[h_from] += 1
                 delta[h_to] -= 1

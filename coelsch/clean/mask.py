@@ -1,13 +1,18 @@
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy.ndimage import binary_dilation
 
+from coelsch.signal import approximate_haplotype_patterns
 from ..records import MarkerRecords, NestedDataArray
+from .bias import estimate_haplotype_bias, normalise_rows
+
+
+log = logging.getLogger('coelsch')
 
 
 def _normalise_expected_ratio(expected_ratio, n_haplotypes):
-    if expected_ratio is None:
-        expected_ratio = np.ones(n_haplotypes, dtype=float)
     expected_ratio = np.asarray(expected_ratio, dtype=float)
     if expected_ratio.ndim == 0:
         if n_haplotypes != 2:
@@ -38,9 +43,12 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     min_cb : int, default=20
         Minimum number of cell barcodes required per bin.
     expected_ratio : array-like, optional
-        Expected haplotype ratio aligned to marker columns. Defaults to 1:1.
+        Expected haplotype ratio aligned to marker columns. Defaults to the
+        population-average haplotype dosage implied by the experiment.
     apply_per_geno : bool, default=True
         Mask separately per genotype.
+    dilate_mask : bool, default=False
+        If True, expand masked regions by one bin on either side.
 
     Returns
     -------
@@ -50,6 +58,8 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
         Total number of bins masked.
     """
     n_haplotypes = co_markers.n_haplotypes
+    if expected_ratio is None:
+        expected_ratio = co_markers.experiment_params.haplotype_dosage
     expected_ratio = _normalise_expected_ratio(expected_ratio, n_haplotypes)
     tolerance = max_imbalance_mask - 0.5
     if tolerance < 0:
@@ -83,6 +93,7 @@ def create_single_cell_haplotype_imbalance_mask(co_markers, max_imbalance_mask=0
     co_markers.add_metadata(haplotype_imbalance_mask=imbalance_mask)
     return imbalance_mask, int(np.median(n_masked_all_genos))
 
+
 def median_absolute_deviation(arr):
     """
     Compute the median absolute deviation (MAD) of an array.
@@ -102,7 +113,7 @@ def median_absolute_deviation(arr):
 
 def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='auto',
                                                  nmad_mask=5, correction=1e-2,
-                                                 apply_per_geno=True):
+                                                 apply_per_geno=True, dilate_mask=True):
     """
     Special haplotype imbalance method for resequencing data (not scRNA)
     that identifies bins with extreme haplotype composition outliers.
@@ -112,13 +123,16 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
     co_markers : MarkerRecords
         Object containing per-cell, per-chromosome haplotype marker counts.
     expected_ratio : array-like or 'auto', optional
-        Expected haplotype ratio. If 'auto', it is estimated from the data as the median ratio.
+        Technical haplotype bias vector. If 'auto', bias is estimated from the
+        data after accounting for approximate haplotype dosage patterns.
     nmad_mask : int, optional
         Number of median absolute deviations (MADs) to use for outlier detection.
     correction : float, optional
         Small value added to numerator and denominator to avoid division by zero.
     apply_per_geno : bool, default=True
         Mask separately per genotype.
+    dilate_mask : bool, default=True
+        If True, expand masked regions by one bin on either side.
 
     Returns
     -------
@@ -127,47 +141,92 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
         where True indicates a bin to exclude due to outlier haplotype composition.
     """
     n_haplotypes = co_markers.n_haplotypes
+    fallback = np.ones(n_haplotypes, dtype=float) / n_haplotypes
+    dosage_patterns = np.asarray(
+        co_markers.experiment_params.haplotype_state_dosage_patterns,
+        dtype=float,
+    )
+    if dosage_patterns.shape[1] != n_haplotypes:
+        raise ValueError(
+            f'haplotype dosage patterns have {dosage_patterns.shape[1]} channels, '
+            f'but MarkerRecords has {n_haplotypes}'
+        )
+
     imbalance_mask = NestedDataArray(levels=('genotype', 'chrom'))
     n_masked_all_genos = []
     for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):
         n_masked = 0
-        chrom_ratios = {}
+        chrom_residuals = {}
         chrom_marker_masks = {}
+
+        if isinstance(expected_ratio, str) and expected_ratio == 'auto':
+            bias = estimate_haplotype_bias(
+                geno_co_markers,
+                correction=correction,
+            )
+        else:
+            bias = _normalise_expected_ratio(expected_ratio, n_haplotypes)
+            bias /= bias.mean()
+
+        log.debug(
+            "Estimated haplotype bias for genotype %r: %s",
+            geno,
+            np.array2string(bias, precision=3),
+        )
+
         for chrom in geno_co_markers.chrom_sizes:
             m = geno_co_markers[:, chrom].stack_values()
             cb_totals = m.sum(axis=(1, 2))[:, np.newaxis, np.newaxis]
             with np.errstate(invalid='ignore', divide='ignore'):
-                m_norm = np.where(cb_totals > 0, m / cb_totals, 0.0).sum(axis=0)
-            tot = m_norm.sum(axis=1, keepdims=True)
-            chrom_marker_masks[chrom] = tot[:, 0] > 0
-            chrom_ratios[chrom] = (m_norm + correction) / (tot + correction * n_haplotypes)
+                m_cb_norm = np.where(cb_totals > 0, m / cb_totals, 0.0)
+            m_norm = m_cb_norm.sum(axis=0)
 
-        valid_ratios = np.concatenate([
-            ratios[chrom_marker_masks[chrom]]
-            for chrom, ratios in chrom_ratios.items()
+            marker_mask = m_norm.sum(axis=1) > 0
+            observed_ratio = normalise_rows(m_norm + correction, fallback)
+
+            pattern_counts = m_cb_norm / bias[None, None, :]
+            pattern_weights = approximate_haplotype_patterns(
+                pattern_counts,
+                dosage_patterns,
+            ).reshape(m_cb_norm.shape[0], m_cb_norm.shape[1], -1)
+            expected_dosage = np.einsum(
+                'bp,ph->bh',
+                pattern_weights.sum(axis=0),
+                dosage_patterns,
+            )
+
+            expected_ratio_by_bin = normalise_rows(
+                expected_dosage * bias[None, :],
+                fallback,
+            )
+
+            chrom_residuals[chrom] = observed_ratio - expected_ratio_by_bin
+            chrom_marker_masks[chrom] = marker_mask
+
+        valid_residual_chunks = [
+            residuals[chrom_marker_masks[chrom]]
+            for chrom, residuals in chrom_residuals.items()
             if np.any(chrom_marker_masks[chrom])
-        ])
-        if len(valid_ratios) == 0:
-            expected = np.ones(n_haplotypes, dtype=float) / n_haplotypes
+        ]
+        if not valid_residual_chunks:
             mad = np.ones(n_haplotypes, dtype=float)
         else:
-            if isinstance(expected_ratio, str) and expected_ratio == 'auto':
-                expected = np.median(valid_ratios, axis=0)
-                expected /= expected.sum()
-            else:
-                expected = _normalise_expected_ratio(expected_ratio, n_haplotypes)
+            valid_residuals = np.concatenate(valid_residual_chunks)
             mad = np.array([
-                median_absolute_deviation(valid_ratios[:, i] - expected[i])
+                median_absolute_deviation(valid_residuals[:, i])
                 for i in range(n_haplotypes)
             ])
             mad = np.maximum(mad, correction)
 
-        for chrom, ratios in chrom_ratios.items():
-            ratios[~chrom_marker_masks[chrom]] = expected
-            mask = binary_dilation(np.any(
-                np.abs(ratios - expected[None, :]) > (mad[None, :] * nmad_mask),
+        for chrom, residuals in chrom_residuals.items():
+            residuals = residuals.copy()
+            residuals[~chrom_marker_masks[chrom]] = 0.0
+            mask = np.any(
+                np.abs(residuals) > (mad[None, :] * nmad_mask),
                 axis=1,
-            ))
+            )
+            if dilate_mask:
+                mask = binary_dilation(mask)
             n_masked += mask.sum(axis=None)
             imbalance_mask[geno, chrom] = np.repeat(mask[:, None], n_haplotypes, axis=1)
         n_masked_all_genos.append(n_masked)

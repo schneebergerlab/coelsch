@@ -9,6 +9,7 @@ from matplotlib.colors import Normalize, LinearSegmentedColormap
 
 from coelsch.experiment.genotypes import GenotypeKey
 from coelsch.stats import n_crossovers
+from coelsch.predict.utils import co_switch_resolver
 
 from .core import chrom_subplots, XLIM_OFFSET
 
@@ -93,8 +94,19 @@ def _add_co_prob_colormesh(ax, hp, chrom_size, bin_size, ylims, cmap, norm):
     return ax
 
 
-def _add_gt_vlines(ax, gt, bin_size, ylims, colour='#eeeeee'):
-    gt_pos = (np.where(np.diff(gt))[0] + 1) * bin_size
+def _gt_switch_positions(gt, experiment_params, bin_size, haplotypes=None):
+    gt = np.asarray(gt)
+    haplotypes = set(range(gt.shape[1])) if haplotypes is None else set(haplotypes)
+    co_iter = co_switch_resolver(experiment_params)
+    bins = {
+        b
+        for b, h_from, h_to in co_iter(gt)
+        if h_from in haplotypes and h_to in haplotypes
+    }
+    return np.array(sorted(bins), dtype=int) * bin_size
+
+
+def _add_gt_vlines(ax, gt_pos, ylims, colour='#eeeeee'):
     if len(gt_pos):
         ax.vlines(
             gt_pos,
@@ -246,10 +258,15 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
                         xy=(0.05, 0.05),
                         xycoords='axes fraction'
                     )
-            if show_gt and row_idx == 0:
-                _add_gt_vlines(
-                    ax, gt[chrom], co_markers.bin_size, ylims
+            if show_gt:
+                gt_haps = (ref_idx, alt_idx, alt2_idx) if alt2_idx is not None else (ref_idx, alt_idx)
+                gt_pos = _gt_switch_positions(
+                    gt[chrom],
+                    co_markers.experiment_params,
+                    co_markers.bin_size,
+                    haplotypes=gt_haps,
                 )
+                _add_gt_vlines(ax, gt_pos, ylims)
     fig.supylabel('Informative read coverage')
     plt.tight_layout()
     return fig, axes[0] if nrows == 1 else axes

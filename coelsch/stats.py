@@ -54,35 +54,41 @@ def n_crossovers(cb_co_preds, min_co_prob=5e-3):
 
 def _error_rate(n, d, pseudo=0.5):
     return (d - n + pseudo) / (d + pseudo + pseudo)
-    
 
-def _chrom_agreement(m, dosage):
-    if dosage.ndim != 2:
+
+def thresholded_dosage(p, state_dosage):
+    d = ((p[:, None, :] - state_dosage[None, :, :]) ** 2).sum(axis=2)
+    state = np.argmin(d, axis=1)
+    return state_dosage[state].astype(float, copy=False)
+
+
+def _chrom_agreement(m, p):
+    if p.ndim != 2:
         raise ValueError('prediction dosage array must be 2D')
 
-    if m.shape != dosage.shape:
+    if m.shape != p.shape:
         raise ValueError(
-            f"marker and prediction shapes do not match: {m.shape} != {dosage.shape}"
+            f"marker and prediction shapes do not match: {m.shape} != {p.shape}"
         )
 
     total = m.sum(axis=None)
-    if total <= 0:
-        return 0.0, 0.0
-
-    row_totals = dosage.sum(axis=1, keepdims=True)
-    hap_probs = dosage / np.maximum(row_totals, 1e-12)
-    agreement = (m * hap_probs).sum(axis=None)
+    p = np.clip(p, 0.0, 1.0)
+    agreement = (m * p).sum(axis=None)
     return agreement, total
 
 
-def _marker_agreement_totals(cb_co_markers, cb_co_preds, thresholded=False):
+def _marker_agreement_totals(cb_co_markers, cb_co_preds,
+                             thresholded=False, state_dosages=None):
     agreement = 0.0
     total = 0.0
+
+    if thresholded and state_dosages is None:
+        raise ValueError('need state_dosages when thresholded is True')
 
     for chrom, m in cb_co_markers.items():
         p = cb_co_preds[chrom]
         if thresholded:
-            p = np.round(p)
+            p = thresholded_dosage(p, state_dosages)
         n, d = _chrom_agreement(m, p)
         agreement += n
         total += d
@@ -90,9 +96,11 @@ def _marker_agreement_totals(cb_co_markers, cb_co_preds, thresholded=False):
     return agreement, total
 
 
-def marker_agreement_fraction(cb_co_markers, cb_co_preds, thresholded=False):
+def marker_agreement_fraction(cb_co_markers, cb_co_preds,
+                              thresholded=False, state_dosages=None):
     agreement, total = _marker_agreement_totals(
-        cb_co_markers, cb_co_preds, thresholded=thresholded
+        cb_co_markers, cb_co_preds,
+        thresholded=thresholded, state_dosages=state_dosages
     )
     if total <= 0:
         return np.nan
@@ -135,13 +143,14 @@ def aneuploidy_score(cb_co_markers, cb_co_preds, pseudo=0.5):
     )
     
 
-def prediction_uncertainty_score(cb_co_pred_dosage):
+def prediction_uncertainty_score(cb_co_pred_dosage, state_dosages):
     """
     Calculates uncertainty as deviation from hard haplotype dosage calls.
     """
     auc = 0
     for p in cb_co_pred_dosage.values():
-        hu = np.abs(p - np.round(p)).sum(axis=1) / p.sum(axis=1)
+        p_t = thresholded_dosage(p, state_dosages)
+        hu = np.abs(p - p_t).sum(axis=1) / p.sum(axis=1)
         auc += np.trapz(hu)
     with np.errstate(divide='ignore'):
         return np.maximum(np.log10(auc), 0)
@@ -212,6 +221,9 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     bg_frac = co_markers.metadata.get('estimated_background_fraction', {})
     doublet_rate = co_preds.metadata.get('doublet_probability', {})
     expected_dosage = co_preds.experiment_params.haplotype_dosage
+    state_dosages = np.array(
+        co_preds.experiment_params.haplotype_state_dosage_patterns
+    )
 
     for cb, cb_co_markers in co_markers.items():
         cb_co_preds = co_preds[cb]
@@ -228,7 +240,7 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
             bg_frac.get(cb, np.nan),
             n_crossovers(cb_co_preds, min_co_prob=nco_min_prob),
             marker_agreement_score(cb_co_markers, cb_co_pred_dosage, max_score=max_phred_score),
-            prediction_uncertainty_score(cb_co_pred_dosage),
+            prediction_uncertainty_score(cb_co_pred_dosage, state_dosages),
             doublet_rate.get(cb, np.nan),
             marker_span_score(cb_co_markers),
             haplotype_dosage_bias(cb_co_pred_dosage, expected_dosage)
@@ -244,7 +256,8 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     return qual_metrics
 
 
-def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False, max_score=10):
+def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False,
+                           state_dosages=None, max_score=10):
     """
     Calculate a phred-like score from mean absolute haplotype dosage error.
 
@@ -264,6 +277,10 @@ def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False, max_score=1
     float
         The haplotype MAE score, capped at the provided `max_score`.
     """
+
+    if thresholded and state_dosages is None:
+        raise ValueError('need state_dosages when thresholded is True')
+
     abs_error = 0.0
     total_dosage = 0.0
 
@@ -450,7 +467,7 @@ def co_sample_assignment_metrics(cb_co_assignments, bin_size):
     recall = []
     fdr = []
     matched_distances = []
-    for _, sample in cb_co_assignments.deep_items():
+    for *_, sample in cb_co_assignments.deep_items():
 
         has_gt = np.isfinite(sample[:, 0])
         has_pred = np.isfinite(sample[:, 1])

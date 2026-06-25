@@ -121,7 +121,6 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
                 crossover_samples,
                 co_markers.metadata['ground_truth'],
                 experiment_params=co_markers.experiment_params,
-                ploidy=co_markers.experiment_params.ploidy,
             )
             co_preds.add_metadata(co_sample_gt_assignment=co_sample_gt_assignment)
     return co_preds

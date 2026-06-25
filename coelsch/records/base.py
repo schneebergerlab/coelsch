@@ -369,7 +369,7 @@ class NestedData:
 
         def _recursive_items(obj, depth, key_path):
             if depth == max_depth:
-                yield key_path, obj
+                yield *key_path, obj
             else:
                 for key, val in obj.items():
                     yield from _recursive_items(val, depth + 1, key_path + (key,))

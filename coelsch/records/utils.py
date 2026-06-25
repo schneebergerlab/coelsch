@@ -60,11 +60,18 @@ def run_length_decode(values, lengths):
     return np.repeat(values, lengths)
 
 
+def _json_float(v, precision):
+    v = float(v)
+    if precision is None or not np.isfinite(v):
+        return v
+    return round(v, precision)
+
+
 def array_encoder_full(arr, precision):
     return  {
         'shape': arr.shape,
         'dtype': arr.dtype.str,
-        'data': [round(float(v), precision) for v in arr.ravel()]
+        'data': [_json_float(v, precision) for v in arr.ravel()]
     }
 
 
@@ -82,7 +89,7 @@ def array_encoder_sparse(arr, precision):
     shape = arr.shape
     arr = arr.ravel()
     idx = np.nonzero(arr)[0]
-    val = [round(float(v), precision) for v in arr[idx]]
+    val = [_json_float(v, precision) for v in arr[idx]]
     return {
         'shape': shape,
         'dtype': arr.dtype.str,

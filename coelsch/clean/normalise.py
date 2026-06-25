@@ -3,42 +3,7 @@ from pomegranate import distributions as pmd
 
 from coelsch.records import MarkerRecords
 from coelsch.predict.rhmm.dists import ZeroInflated
-
-
-def expected_haplotype_ratio(co_markers):
-    params = co_markers.experiment_params
-    n_haplotypes = co_markers.n_haplotypes
-
-    if params.genotyping_strategy == "recombinant":
-        expected_ratio = np.ones(2, dtype=float)
-    else:
-        ratios = {
-            "f1": (1, 1),
-            "f2": (1, 1),
-            "backcross": (3, 1),
-            "testcross": (2, 1, 1),
-            "three_way": (2, 1, 1),
-            "four_way": (1, 1, 1, 1),
-        }
-        expected_ratio = np.array(ratios[params.crossing_strategy], dtype=float)
-
-    if expected_ratio.shape[0] != n_haplotypes:
-        raise ValueError(
-            "expected haplotype ratio has length "
-            f"{expected_ratio.shape[0]}, but MarkerRecords has {n_haplotypes} channels"
-        )
-
-    return expected_ratio
-
-
-def _compute_bias_factor(co_markers, hap_bias_correction_strength=0.75):
-    expected = expected_haplotype_ratio(co_markers)
-    hap_totals = np.sum([m.sum(axis=0) for m in co_markers.deep_values()], axis=0)
-    expected /= expected.sum()
-    observed = hap_totals / hap_totals.sum()
-    raw_factor = observed / expected
-    bias_factor = 1.0 + hap_bias_correction_strength * (raw_factor - 1.0)
-    return bias_factor
+from .bias import compute_bias_factor
 
 
 def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, max_upweight=4.0,
@@ -101,7 +66,7 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
         tot[chrom] = mc.copy() if chrom not in tot else (tot[chrom] + mc)
     bin_means = {chrom: t / n_cb for chrom, t in tot.items()}
     if correct_hap_bias:
-        bias_factor = _compute_bias_factor(co_markers, hap_bias_correction_strength)
+        bias_factor = compute_bias_factor(co_markers, hap_bias_correction_strength)
     else:
         bias_factor = np.ones(shape=n_haplotypes)
 

@@ -4,7 +4,7 @@ import numpy as np
 
 from .background import estimate_overall_background_signal, clean_marker_background
 from .filter import filter_low_coverage_barcodes, filter_genotyping_score
-from .normalise import normalise_bin_coverage, normalise_barcode_depth, expected_haplotype_ratio
+from .normalise import normalise_bin_coverage, normalise_barcode_depth
 from .mask import (
     create_single_cell_haplotype_imbalance_mask,
     create_resequencing_haplotype_imbalance_mask,
@@ -94,7 +94,6 @@ def run_clean(marker_json_fn, output_json_fn, *,
         'genotype_probability', 'genotype_error_rates'
     }.issubset(co_markers.metadata)
 
-    expected_ratio = expected_haplotype_ratio(co_markers)
 
     if apply_per_geno and not has_genotypes:
         log.warning(
@@ -126,7 +125,6 @@ def run_clean(marker_json_fn, output_json_fn, *,
             mask, n_masked = create_single_cell_haplotype_imbalance_mask(
                 co_markers, max_marker_imbalance,
                 apply_per_geno=apply_per_geno,
-                expected_ratio=expected_ratio,
             )
             co_markers = apply_haplotype_imbalance_mask(
                 co_markers, mask, apply_per_geno=apply_per_geno

@@ -1,5 +1,5 @@
 import logging
-from collections import namedtuple, Counter
+from collections import Counter
 import numpy as np
 import pandas as pd
 
@@ -14,9 +14,6 @@ from coelsch.defaults import DEFAULT_RANDOM_SEED
 
 log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
-
-
-import numpy as np
 
 
 def samples_to_crossover_events(hap_samples, experiment_params):
@@ -43,7 +40,7 @@ def samples_to_crossover_events(hap_samples, experiment_params):
             if sample_events:
                 sample_events = np.asarray(sample_events, dtype=np.int32)
             else:
-                sample_events = np.empty((0, 4), dtype=np.int32)
+                sample_events = np.empty((0, 3), dtype=np.int32)
             seq_events.append(sample_events)
         events.append(seq_events)
 

@@ -15,7 +15,7 @@ def co_switch_resolver(experiment_params):
             f"{before.tolist()} -> {after.tolist()}"
         )
 
-    if params.crossing_strategy == "three_way":
+    if experiment_params.crossing_strategy == "three_way":
 
         def _resolve_complex_switch(b, delta, before, after):
             lost = np.where(delta < 0)[0]

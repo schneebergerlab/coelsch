@@ -158,7 +158,7 @@ class IndependentMeiosesHMM:
             rng=rng,
         )
         sample = np.zeros((*s0.shape[:-1], self.n_haplotypes), dtype=s0.dtype)
-        sample[..., self.meioses[0]] += s1
+        sample[..., self.meioses[0]] += s0
         sample[..., self.meioses[1]] += s1
         return sample
 
@@ -227,6 +227,5 @@ class IndependentMeiosesHMM:
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
             trans_prob_decay_rate=params['trans_prob_decay_rate'],
-            n_haplotypes=int(n_haplotypes),
             device=device
         )

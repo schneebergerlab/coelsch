@@ -460,10 +460,16 @@ def plot_coefficient_of_coincidence(co_preds,
             raise ValueError()
 
         track_colours = {}
-        for chrom, ax in zip(group_co_preds.chrom_sizes, axes):
+        for chrom, ax in zip(chrom_sizes, axes):
             for meiosis, track_label in zip(meioses, track_labels):
                 meiosis_coc = group_coc[meiosis][chrom]
                 plot_label = _append_track_label(group, track_label, apply_by)
+                if np.isnan(meiosis_coc).all():
+                    log.warning(
+                        'Skipping undefined CoC curve for group=%r track=%r chrom=%s',
+                        group, track_label, chrom
+                    )
+                    continue
                 curr_colour = track_colours.get(plot_label, None)
                 line, = ax.plot(x[chrom], np.nanmean(meiosis_coc, axis=0), color=curr_colour)
                 curr_colour = line.get_color()

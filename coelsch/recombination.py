@@ -262,12 +262,15 @@ def _distances_expected(crossover_samples, max_pairs=200_000, only_adjacent=Fals
     
     exp = {}
     exp_pairs = {}
-    cos_per_chrom = np.mean([len(samp) for chrom_samples in crossover_samples.values() for samp in chrom_samples])
     for chrom, chrom_samples in crossover_samples.items():
         n_samples = len(chrom_samples)
         lam = np.mean([len(o) for o in chrom_samples])
         chrom_samples = np.concatenate(chrom_samples)
         chrom_exp = []
+        if chrom_samples.size == 0:
+            exp[chrom] = np.array([], dtype=float)
+            exp_pairs[chrom] = 0.0
+            continue
         if only_adjacent:
             for n_co in rng.poisson(lam, size=n_samples):
                 if n_co > 1:
@@ -317,6 +320,12 @@ def _coc_curve_sample(crossover_samples, bins, chrom_nbins, only_adjacent=False,
     for chrom in obs:
         obs_h, edges = np.histogram(obs[chrom], bins=bins[chrom])
         exp_h, _ = np.histogram(exp[chrom], bins=bins[chrom])
+        bin_mids[chrom] = 0.5 * (edges[:-1] + edges[1:])
+        if len(obs[chrom]) == 0 or len(exp[chrom]) == 0 or exp_pairs[chrom] == 0:
+            coc[chrom] = np.full(len(edges) - 1, np.nan, dtype=float)
+            Lint[chrom] = np.nan
+            continue
+
         frac_obs_pairs = obs_pairs[chrom] / exp_pairs[chrom]
         exp_h = exp_h / len(exp[chrom])
         obs_h = frac_obs_pairs * obs_h / len(obs[chrom])
@@ -331,8 +340,7 @@ def _coc_curve_sample(crossover_samples, bins, chrom_nbins, only_adjacent=False,
         elif len(exp[chrom]) > 0:
             Lint[chrom] =  1 - d_exp
         else:
-            Lint[chrom] = 1
-        bin_mids[chrom] = 0.5 * (edges[:-1] + edges[1:])
+            Lint[chrom] = np.nan
     return bin_mids, coc, Lint
 
 

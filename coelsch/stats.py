@@ -463,7 +463,7 @@ def co_sample_assignment_metrics(cb_co_assignments, bin_size):
         recall.append(np.nan if n_gt == 0 else n_matched / n_gt)
         fdr.append(np.nan if n_pred == 0 else (n_pred - n_matched) / n_pred)
         if n_matched:
-            matched_distances.append(sample[matched, 4])
+            matched_distances.append(sample[matched, 5])
 
     if matched_distances:
         mean_distance_bp = np.concatenate(matched_distances).mean() * bin_size

@@ -12,6 +12,7 @@ from .mask import (
     apply_marker_threshold, mask_regions_bed
 )
 from ..utils import load_json
+from ..records import NestedData
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 
 
@@ -84,6 +85,17 @@ def run_clean(marker_json_fn, output_json_fn, *,
     """
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
+
+    co_markers.add_metadata(
+        raw_total_marker_count=NestedData(
+            levels=('cb',),
+            dtype=(int,),
+            data={
+                cb: int(co_markers.total_marker_count(cb))
+                for cb in co_markers.barcodes
+            },
+        )
+    )
 
     experiment_params = co_markers.experiment_params
     sequencing_type = experiment_params.sequencing_type

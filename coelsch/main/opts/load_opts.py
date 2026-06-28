@@ -150,6 +150,18 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--recombinant-parent-json', 'genotype_recombinant_parent_jsons',
+    subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
+    multiple=True,
+    type=_input_file_type,
+    required=False,
+    default=(),
+    help=('Pred json encoding recombinant parental haplotypes. May be provided once '
+          'for one diploid parental prediction record, or twice for two haploid records.')
+)
+
+
+coelsch_opts.option(
     '--genotype-em-max-iter',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred'],
     required=False,

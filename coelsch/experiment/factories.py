@@ -222,7 +222,7 @@ def _metadata_genotype(record, sample):
             f"PredictionRecords metadata['genotypes'] is missing sample {sample!r}"
         ) from exc
 
-    return GenotypeKey.from_any(genotype)
+    return GenotypeKey.from_any(genotype, name=sample)
 
 
 def _setup_from_double_parental_predictions(left, right, experiment_params):
@@ -254,7 +254,7 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
                     left_pos_genotype.to_nested_tuple(),
                     right_pos_genotype.to_nested_tuple(),
                 )
-                positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_tree)
+                positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_tree, name=sample)
 
     return ExperimentalDesign(
         positional_genotypes.genotypes,

@@ -87,15 +87,17 @@ class GenotypeKey:
         )
 
     @classmethod
-    def from_any(cls, obj, parental_roles="infer"):
+    def from_any(cls, obj, name=None, parental_roles="infer"):
         if isinstance(obj, cls):
+            if name is not None:
+                object.__setattr__(obj, "name", name)
             return obj
         if isinstance(obj, str):
-            return cls.from_str(obj, parental_roles=parental_roles)
+            return cls.from_str(obj, name=name, parental_roles=parental_roles)
         if isinstance(obj, tuple):
             if parental_roles == "infer":
                 parental_roles = "undefined"
-            return cls(obj, parental_roles=parental_roles)
+            return cls(obj, name=name, parental_roles=parental_roles)
         raise TypeError("Expected GenotypeKey, str, or tuple")
 
     @classmethod
@@ -370,12 +372,14 @@ class GenotypeKey:
     def _identity(self):
         if self.parental_roles == "sexed":
             return (
+                self.name,
                 self.parental_roles,
                 self.genotype,
                 tuple(sorted(self.sex_roles)),
             )
 
         return (
+            self.name,
             self.parental_roles,
             self.genotype,
         )
@@ -497,6 +501,12 @@ class GenotypeKey:
     @property
     def is_leaf_genotype(self):
         return self.is_leaf(self.genotype)
+
+    @property
+    def parents(self):
+        if self.is_leaf_genotype:
+            raise ValueError("Leaf genotype has no parents")
+        return (self.parent1, self.parent2)
 
     @property
     def parent1(self):

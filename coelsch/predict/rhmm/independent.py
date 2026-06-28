@@ -2,6 +2,7 @@
 Independent-meiosis wrapper models for rigid HMM prediction.
 """
 import logging
+from collections import Counter
 from functools import reduce
 import numpy as np
 import torch
@@ -92,6 +93,16 @@ class IndependentMeiosesHMM:
         self.n_haplotypes = int(max(hap for state in self.states for hap in state) + 1)
         self.ploidy = len(self.meioses)
 
+    @property
+    def state_haplotype_dosage(self):
+        if not hasattr(self, '_state_haplotype_dosage'):
+            dosage = np.zeros((self.nstates, self.n_haplotypes), dtype=np.float32)
+            for i, state in enumerate(self.states):
+                for hap, count in Counter(state).items():
+                    dosage[i, hap] = min(count, self.ploidy)
+            self._state_haplotype_dosage = dosage
+        return self._state_haplotype_dosage
+
     def _meiosis_array(self, X, meiosis_idx):
         arr = X[:, :, self.meioses[meiosis_idx]]
         if isinstance(arr, np.ma.MaskedArray):
@@ -111,25 +122,39 @@ class IndependentMeiosesHMM:
             )
 
     def predict_state_proba(self, X, batch_size=128):
-        return NotImplemented
-
-    def predict_haplo_proba(self, X, batch_size=128):
         self._validate_input(X)
-        p0 = self.rhmms[0].predict_haplo_proba(
+        s0 = self.rhmms[0].predict_state_proba(
             self._meiosis_array(X, 0),
             batch_size=batch_size,
         )
-        p1 = self.rhmms[1].predict_haplo_proba(
+        s1 = self.rhmms[1].predict_state_proba(
             self._meiosis_array(X, 1),
             batch_size=batch_size,
         )
-        haplo_proba = np.zeros((*p0.shape[:2], self.n_haplotypes), dtype=p0.dtype)
-        haplo_proba[:, :, self.meioses[0]] += p0
-        haplo_proba[:, :, self.meioses[1]] += p1
+
+        joint = s0[:, :, :, None] * s1[:, :, None, :]
+        return joint.reshape(*joint.shape[:2], -1)
+
+    def _states_to_hap_probs(self, state_proba):
+        haplo_proba = state_proba @ self.state_haplotype_dosage
         return np.clip(haplo_proba, 0, self.ploidy)
 
-    def predict(self, X, batch_size=128):
-        return self.predict_haplo_proba(X, batch_size=batch_size)
+    def _states_to_called_haps(self, state_proba):
+        state_idx = state_proba.argmax(axis=2)
+        return self.state_haplotype_dosage[state_idx]
+
+    def predict_haplo_proba(self, X, batch_size=128):
+        state_proba = self.predict_state_proba(X, batch_size)
+        return self._states_to_hap_probs(state_proba)
+
+    def predict(self, X, batch_size=128, return_called_haps=False):
+        state_proba = self.predict_state_proba(X, batch_size)
+        haplo_proba = self._states_to_hap_probs(state_proba)
+
+        if not return_called_haps:
+            return haplo_proba
+
+        return haplo_proba, self._states_to_called_haps(state_proba)
 
     def log_probability(self, X, batch_size=128):
         self._validate_input(X)

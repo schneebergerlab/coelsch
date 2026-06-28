@@ -45,6 +45,15 @@ coelsch_opts.argument(
 
 
 coelsch_opts.argument(
+    'json-fn',
+    subcommands=['inspect'],
+    required=True,
+    nargs=1,
+    type=_input_file_type,
+)
+
+
+coelsch_opts.argument(
     'pred-json-fn',
     subcommands=['doublet', 'stats', 'segdist'],
     required=True,
@@ -121,7 +130,7 @@ coelsch_opts.option(
     '-c', '--cb-whitelist-fn',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
                  'sim', 'clean', 'predict', 'doublet', 'stats',
-                 'plot', 'segdist'],
+                 'plot', 'segdist', 'inspect'],
     required=False,
     type=_input_file_type,
     help='Text file containing whitelisted cell barcodes, one per line'

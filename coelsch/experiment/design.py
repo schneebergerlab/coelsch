@@ -33,7 +33,10 @@ class ExperimentalDesign:
         self.genotypes = genotypes
 
         self._check_compatible()
-        self._check_duplicates()
+
+        if not self.experiment_params.genotyping_strategy == 'recombinant':
+            # for recombinants duplicates are allowed
+            self._check_duplicates()
 
         self.idx = {
             g: i
@@ -81,8 +84,14 @@ class ExperimentalDesign:
             seen_names[genotype.name] = genotype
 
     def __getattr__(self, attr):
+        experiment_params = self.__dict__.get('experiment_params')
+        if experiment_params is None:
+            raise AttributeError(
+                f"{type(self).__qualname__} object has no attribute {attr!r}"
+            )
+ 
         try:
-            return getattr(self.experiment_params, attr)
+            return getattr(experiment_params, attr)
         except AttributeError as exc:
             raise AttributeError(
                 f"{type(self).__qualname__} object has no attribute {attr!r}"

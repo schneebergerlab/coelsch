@@ -124,6 +124,16 @@ def plot_subcommand(**kwargs):
     run_plot(**kwargs)
 
 
+@main.command('inspect')
+@coelsch_opts('inspect')
+def inspect_subcommand(**kwargs):
+    '''
+    Inspect a MarkerRecords or PredictionRecords JSON file.
+    '''
+    from coelsch.inspect import run_inspect
+    run_inspect(**kwargs)
+
+
 def _clean_predict_pipeline(co_markers, output_prefix, kwargs):
 
     from coelsch.clean.commands import run_clean

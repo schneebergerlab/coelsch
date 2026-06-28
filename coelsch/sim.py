@@ -9,7 +9,7 @@ from coelsch.records import MarkerRecords, PredictionRecords, NestedDataArray
 from coelsch.experiment.params import ExperimentParams
 from coelsch.clean.filter import filter_low_coverage_barcodes
 from coelsch.defaults import DEFAULT_RANDOM_SEED
-from coelsch.stats import marker_agreement_fraction, thresholded_dosage
+from coelsch.stats import marker_agreement_fraction
 
 
 log = logging.getLogger('coelsch')
@@ -79,31 +79,9 @@ def read_ground_truth_haplotypes_bed(co_invs_fn, chrom_sizes, bin_size=25_000):
     return gt
 
 
-def _ground_truth_dosage(ground_truth, sample_id, chrom, thresholded=True):
-    dosage = ground_truth.get_haplotype_dosage(sample_id, chrom)
-
-    if not thresholded:
-        return dosage.astype(float, copy=False)
-
-    state_dosage = np.array(
-        ground_truth.experiment_params.haplotype_state_dosage_patterns
-    )
-    return thresholded_dosage(dosage, state_dosage)
-
-
 def _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=True):
-    source_dosage = {
-        chrom: co_preds.get_haplotype_dosage(cb, chrom)
-        for chrom in co_preds.chrom_sizes
-    }
-    agreement = marker_agreement_fraction(
-        co_markers[cb],
-        source_dosage,
-        thresholded=thresholded,
-        state_dosages=np.array(
-            co_markers.experiment_params.haplotype_state_dosage_patterns
-        )
-    )
+    source_dosage = co_preds.get_haplotype_dosage(cb, as_called_haps=thresholded)
+    agreement = marker_agreement_fraction(co_markers[cb], source_dosage)
     if np.isnan(agreement):
         return 0.0
     return np.clip(1.0 - agreement, 0.0, 1.0)
@@ -181,9 +159,10 @@ def _pool_haplotype_array(arr, pools):
     return pooled
 
 
-def _copy_non_genotyping_metadata(metadata):
+def _copy_non_genotyping_metadata(metadata, pool_called_haps=True):
     if metadata is None:
         return None
+    
     return {
         key: deepcopy(value)
         for key, value in metadata.items()
@@ -242,14 +221,29 @@ def apply_crossing_strategy_pooling(record, target_crossing_strategy, pools):
         frozen=record.frozen,
     )
 
+    called_haps = None
+    if isinstance(record, PredictionRecords):
+        called_haps = NestedDataArray(levels=('cb', 'chrom'))
+        pooled_record.add_metadata(called_haplotypes=called_haps)
+
     for cb, chrom, arr in record.deep_items():
         if isinstance(record, PredictionRecords):
             arr = record.get_haplotype_dosage(cb, chrom)
+
         pooled = _pool_haplotype_array(arr, pools)
-        if isinstance(pooled_record, PredictionRecords) and pooled_record._ndim == 1:
-            pooled_record[cb, chrom] = pooled[:, 1]
-        else:
-            pooled_record[cb, chrom] = pooled
+
+        if isinstance(pooled_record, PredictionRecords):
+            arr_called = record.get_haplotype_dosage(cb, chrom, as_called_haps=True)
+            pooled_called = _pool_haplotype_array(arr_called, pools)
+
+            if pooled_record._ndim == 1:
+                pooled = pooled[:, 1]
+                pooled_called = pooled_called[:, 1]
+
+            called_haps[cb, chrom] = pooled_called
+
+        pooled_record[cb, chrom] = pooled
+
     return pooled_record
 
 
@@ -294,6 +288,7 @@ def align_sim_crossing_strategy(co_markers, co_preds, ground_truth,
         ground_truth = apply_crossing_strategy_pooling(ground_truth, target, get_pools(ground_truth))
 
     return co_markers, co_preds, ground_truth
+
 
 def apply_gt_dosage_to_markers(gt_dosage, m, noise_fraction, rng=DEFAULT_RNG):
     """
@@ -350,20 +345,20 @@ def simulate_singlets(co_markers, co_preds, ground_truth, nsim_per_sample,
                 if noise_fraction is not None
                 else _barcode_noise_fraction(co_markers, co_preds, cb, thresholded=thresholded)
             )
+            gt_dosage = ground_truth.get_haplotype_dosage(
+                sample_id, as_called_haps=thresholded
+            )
             for chrom in ground_truth.chrom_sizes:
-                gt_dosage = _ground_truth_dosage(
-                    ground_truth, sample_id, chrom, thresholded=thresholded
-                )
                 sim_co_markers[sim_id, chrom] = apply_gt_dosage_to_markers(
-                    gt_dosage,
+                    gt_dosage[chrom],
                     co_markers[cb, chrom],
                     cb_noise,
                     rng=rng,
                 )
                 if sim_co_markers.n_haplotypes == 2:
-                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage[:, 1]
+                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage[chrom, :, 1]
                 else:
-                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage
+                    sim_co_markers.metadata['ground_truth'][sim_id, chrom] = gt_dosage[chrom]
 
     return sim_co_markers
 

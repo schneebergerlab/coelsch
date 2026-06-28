@@ -580,14 +580,14 @@ class NestedData:
             raise NotImplementedError(f'json serialisation not implemented for type: {type(obj)}')
         return json_serialisable
 
-    def to_json(self, precision=5):
+    def to_json(self, precision=3):
         """
         Serializes the nested data dictionary to a JSON-compatible format.
 
         Parameters
         ----------
         precision : int, optional
-            The number of decimal places to use when serializing floating-point values (default is 5).
+            The number of decimal places to use when serializing floating-point values (default is 3).
 
         Returns
         -------
@@ -765,14 +765,14 @@ class NestedDataArray(NestedData):
 
         return _deserialise(obj, 0)
 
-    def to_json(self, precision=5, encode_method='full'):
+    def to_json(self, precision=3, encode_method='full'):
         """
         Serializes the nested data dictionary to a JSON-compatible format.
 
         Parameters
         ----------
         precision : int, optional
-            The number of decimal places to use when serializing floating-point values (default is 5).
+            The number of decimal places to use when serializing floating-point values (default is 3).
         encode_method: None
             Whether to encode the full values or a sparse encoding
 

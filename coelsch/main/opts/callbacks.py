@@ -15,10 +15,25 @@ def log_parameters(log_name):
 log = logging.getLogger('coelsch')
 
 
+def _normalise_recombinant_parent_jsons(kwargs):
+    plural = kwargs.get('genotype_recombinant_parental_haplotypes')
+    singular = kwargs.pop('genotype_recombinant_parent_jsons', ())
+
+    if plural and singular:
+        log.error('provide either --recombinant-parent-json or --recombinant-parent-jsons, not both')
+
+    recombinant_jsons = plural or singular or None
+    if recombinant_jsons is not None and len(recombinant_jsons) not in {1, 2}:
+        log.error('--recombinant-parent-json can be provided once or twice')
+
+    kwargs['genotype_recombinant_parental_haplotypes'] = recombinant_jsons
+    return recombinant_jsons
+
+
 def validate_loadbam_input(kwargs):
     '''decorator to validate the input of the loadbam command'''
     strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
-    recombinant_jsons = kwargs.get('genotype_recombinant_parental_haplotypes')
+    recombinant_jsons = _normalise_recombinant_parent_jsons(kwargs)
     if strategy == 'auto':
         strategy = 'recombinant' if recombinant_jsons else 'founder'
         log.info(f"setting genotyping strategy to '{strategy}'")
@@ -83,7 +98,7 @@ def validate_loadbam_input(kwargs):
 def validate_loadcsl_input(kwargs):
     '''decorator to validate the input of the loadcsl command'''
     strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
-    recombinant_jsons = kwargs.get('genotype_recombinant_parental_haplotypes')
+    recombinant_jsons = _normalise_recombinant_parent_jsons(kwargs)
     if strategy == 'auto':
         strategy = 'recombinant' if recombinant_jsons else 'founder'
         log.info(f"setting genotyping strategy to '{strategy}'")

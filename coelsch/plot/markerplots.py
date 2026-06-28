@@ -62,10 +62,10 @@ def chrom_markerplot(co_markers, chrom_size, bin_size, ax=None, max_yheight='aut
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
-    ax.vlines(pos, base, ref_markers, color=palette[ref_idx], zorder=0, linewidths=linewidths)
-    ax.vlines(pos, base, alt_markers, color=palette[alt_idx], zorder=0, linewidths=linewidths)
+    ax.vlines(pos, base, ref_markers, color=palette[0], zorder=0, linewidths=linewidths)
+    ax.vlines(pos, base, alt_markers, color=palette[1], zorder=0, linewidths=linewidths)
     if alt2_markers is not None:
-        ax.vlines(pos, alt_markers, alt2_markers, color=palette[alt2_idx], zorder=0, linewidths=linewidths)
+        ax.vlines(pos, alt_markers, alt2_markers, color=palette[2], zorder=0, linewidths=linewidths)
     ax.plot([0, chrom_size], [0, 0], ls='-', color='#252525')
     return ax
 
@@ -163,9 +163,16 @@ def _markerplot_ylabel(co_markers, cb, ref_idx, alt_idx, alt2_idx=None):
         label = f'hap{ref_idx} vs hap{alt_idx}'
         if alt2_idx is not None:
             label += f'/hap{alt2_idx}'
+        return label
+    genotype = GenotypeKey.from_any(genotypes[cb])
+    if co_markers.experiment_params.genotyping_strategy == 'recombinant':
+        parents = genotype.parents
+        p1, p2 = parents[ref_idx], parents[alt_idx]
+        object.__setattr__(p1, 'name', None)
+        object.__setattr__(p2, 'name', None)
+        label = f'{str(p1)} vs {str(p2)}'
     else:
-        genotype = GenotypeKey.from_any(genotypes[cb])
-        label =f'{genotype.founders[ref_idx]} vs {genotype.founders[alt_idx]}'
+        label = f'{genotype.founders[ref_idx]} vs {genotype.founders[alt_idx]}'
         if alt2_idx is not None:
             label += f'/{genotype.founders[alt2_idx]}'
     return label
@@ -204,6 +211,7 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
     ylim_offset = max_yheight * 0.05
     ylims = np.array([-max_yheight - ylim_offset, max_yheight + ylim_offset])
 
+    i = 0
     for row_idx, (ref_idx, alt_idx, alt2_idx, cmap, alt_cmap) in enumerate(comparisons):
         axes[row_idx, 0].set_ylabel(
             _markerplot_ylabel(co_markers, cb, ref_idx, alt_idx, alt2_idx)
@@ -222,7 +230,7 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
                 ref_idx=ref_idx,
                 alt_idx=alt_idx,
                 alt2_idx=alt2_idx,
-                palette=palette,
+                palette=palette[i:],
             )
             if co_preds is not None:
                 if show_mesh_prob:
@@ -250,7 +258,7 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
                 if annotate_co_number:
                     idxs = (ref_idx, alt_idx, alt2_idx) if alt2_idx else (ref_idx, alt_idx)
                     n_co = n_crossovers(
-                        {chrom: co_preds[cb, chrom, :, idxs]},
+                        {chrom: co_preds.get_haplotype_dosage(cb, chrom)[:, idxs]},
                         min_co_prob=nco_min_prob_change,
                     )
                     ax.annotate(
@@ -267,6 +275,9 @@ def single_cell_markerplot(cb, co_markers, *, co_preds=None, figsize=(18, 4), ch
                     haplotypes=gt_haps,
                 )
                 _add_gt_vlines(ax, gt_pos, ylims)
+
+        i += 2 if alt2_idx is None else 3
+
     fig.supylabel('Informative read coverage')
     plt.tight_layout()
     return fig, axes[0] if nrows == 1 else axes

@@ -206,16 +206,7 @@ def plot_allele_ratio(co_preds,
         axes[-1].legend()
 
     axes[0].set_ylabel('Allele ratio')
-
-    if (
-        co_preds.experiment_params.genotyping_strategy != 'recombinant'
-        and co_preds.experiment_params.crossing_strategy == 'backcross'
-    ):
-        ylim = (0, 0.5)
-    else:
-        ylim = (0, 1)
-
-    axes[0].set_ylim(*ylim)
+    axes[0].set_ylim(0, 1)
 
     plt.tight_layout()
     return fig, axes

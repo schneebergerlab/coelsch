@@ -72,6 +72,7 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
     """
     seen_barcodes = co_markers.barcodes
     co_preds = PredictionRecords.new_like(co_markers)
+    called_haplotypes = NestedDataArray(levels=('cb', 'chrom'))
     if sample_paths:
         log.debug(f'Probable crossover locations will be sampled with {n_samples} bootstraps')
         crossover_samples=NestedDataArray(
@@ -91,10 +92,15 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
             X = np.array([co_markers[cb, chrom] for cb in seen_barcodes])
             if mask_empty_bins:
                 X = mask_array_zeros(X, axis=1)
-            X_pred = rhmm.predict(X, batch_size=batch_size)
+            X_pred, X_called = rhmm.predict(
+                X,
+                batch_size=batch_size,
+                return_called_haps=True,
+            )
             X_logprob = rhmm.log_probability(X, batch_size=batch_size)
-            for cb, p, lp in zip(seen_barcodes, X_pred, X_logprob):
+            for cb, p, called, lp in zip(seen_barcodes, X_pred, X_called, X_logprob):
                 co_preds[cb, chrom] = p
+                called_haplotypes[cb, chrom] = called
                 logprobs[cb] += lp
             if sample_paths:
                 X_samp = rhmm.sample(X, n=n_samples, batch_size=batch_size, rng=rng)
@@ -112,7 +118,8 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
             levels=('cb',),
             dtype=(float),
             data=dict(logprobs),
-        )
+        ),
+        called_haplotypes=called_haplotypes,
     )
     if sample_paths:
         co_preds.add_metadata(crossover_samples=crossover_samples)

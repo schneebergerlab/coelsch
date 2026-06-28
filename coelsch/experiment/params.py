@@ -93,8 +93,6 @@ class ExperimentParams:
     def check_sane(self):
         if self.lifecycle_stage == "gametes":
             if self.crossing_strategy == "f1":
-                if self.genotyping_strategy != "founder":
-                    raise ValueError("f1 gametes should use genotyping_strategy='founder'")
                 return True
 
             if self.crossing_strategy in {"backcross", "testcross", "three_way", "four_way"}:
@@ -279,6 +277,10 @@ class ExperimentParams:
         """
         genotype_key = GenotypeKey.from_any(genotype_key)
         tree = genotype_key.to_nested_tuple()
+
+        if self.genotyping_strategy == 'recombinant':
+            # allow any crossing strategy here, although some don't make much sense
+            return True
 
         checkers = {
             "f1": self._is_f1,

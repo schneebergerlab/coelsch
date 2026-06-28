@@ -13,7 +13,7 @@ from .callbacks import (
 coelsch_opts = OptionRegistry(
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
                  'sim', 'concat', 'clean', 'predict',
-                 'doublet', 'stats', 'plot', 'segdist', 'alaaf']
+                 'doublet', 'stats', 'plot', 'segdist', 'inspect', 'alaaf']
 )
 coelsch_opts.register_callback(log_parameters('coelsch'))
 coelsch_opts.register_callback(

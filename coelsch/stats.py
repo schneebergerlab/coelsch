@@ -8,7 +8,7 @@ from .records import PredictionRecords
 log = logging.getLogger('coelsch')
 
 
-def total_markers(cb_co_markers):
+def total_markers(cb_co_markers, raw_total_markers=None):
     """
     Calculates the total number of markers for a cell barcode.
 
@@ -22,6 +22,8 @@ def total_markers(cb_co_markers):
     float
         The log-transformed total number of markers (base 10).
     """
+    if raw_total_markers is not None:
+        return np.log10(raw_total_markers)
     tot = 0
     for m in cb_co_markers.values():
         tot += m.sum(axis=None)
@@ -56,12 +58,6 @@ def _error_rate(n, d, pseudo=0.5):
     return (d - n + pseudo) / (d + pseudo + pseudo)
 
 
-def thresholded_dosage(p, state_dosage):
-    d = ((p[:, None, :] - state_dosage[None, :, :]) ** 2).sum(axis=2)
-    state = np.argmin(d, axis=1)
-    return state_dosage[state].astype(float, copy=False)
-
-
 def _chrom_agreement(m, p):
     if p.ndim != 2:
         raise ValueError('prediction dosage array must be 2D')
@@ -77,18 +73,12 @@ def _chrom_agreement(m, p):
     return agreement, total
 
 
-def _marker_agreement_totals(cb_co_markers, cb_co_preds,
-                             thresholded=False, state_dosages=None):
+def _marker_agreement_totals(cb_co_markers, cb_co_preds):
     agreement = 0.0
     total = 0.0
 
-    if thresholded and state_dosages is None:
-        raise ValueError('need state_dosages when thresholded is True')
-
     for chrom, m in cb_co_markers.items():
         p = cb_co_preds[chrom]
-        if thresholded:
-            p = thresholded_dosage(p, state_dosages)
         n, d = _chrom_agreement(m, p)
         agreement += n
         total += d
@@ -96,12 +86,8 @@ def _marker_agreement_totals(cb_co_markers, cb_co_preds,
     return agreement, total
 
 
-def marker_agreement_fraction(cb_co_markers, cb_co_preds,
-                              thresholded=False, state_dosages=None):
-    agreement, total = _marker_agreement_totals(
-        cb_co_markers, cb_co_preds,
-        thresholded=thresholded, state_dosages=state_dosages
-    )
+def marker_agreement_fraction(cb_co_markers, cb_co_preds):
+    agreement, total = _marker_agreement_totals(cb_co_markers, cb_co_preds)
     if total <= 0:
         return np.nan
     return agreement / total
@@ -143,13 +129,13 @@ def aneuploidy_score(cb_co_markers, cb_co_preds, pseudo=0.5):
     )
     
 
-def prediction_uncertainty_score(cb_co_pred_dosage, state_dosages):
+def prediction_uncertainty_score(cb_co_preds, cb_co_calls):
     """
     Calculates uncertainty as deviation from hard haplotype dosage calls.
     """
     auc = 0
-    for p in cb_co_pred_dosage.values():
-        p_t = thresholded_dosage(p, state_dosages)
+    for chrom, p in cb_co_preds.items():
+        p_t = cb_co_calls[chrom]
         hu = np.abs(p - p_t).sum(axis=1) / p.sum(axis=1)
         auc += np.trapz(hu)
     with np.errstate(divide='ignore'):
@@ -221,29 +207,25 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     bg_frac = co_markers.metadata.get('estimated_background_fraction', {})
     doublet_rate = co_preds.metadata.get('doublet_probability', {})
     expected_dosage = co_preds.experiment_params.haplotype_dosage
-    state_dosages = np.array(
-        co_preds.experiment_params.haplotype_state_dosage_patterns
-    )
+    raw_marker_counts = co_markers.metadata.get('raw_total_marker_count', {})
 
     for cb, cb_co_markers in co_markers.items():
         cb_co_preds = co_preds[cb]
-        cb_co_pred_dosage = {
-            chrom: co_preds.get_haplotype_dosage(cb, chrom)
-            for chrom in co_preds.chrom_sizes
-        }
+        cb_co_dosage = co_preds.get_haplotype_dosage(cb)
+        cb_co_calls = co_preds.get_haplotype_dosage(cb, as_called_haps=True)
         qual_metrics.append([
             cb,
             genotypes.get(cb, None),
             genotype_probs.get(cb, np.nan),
             np.log10(genotype_nmarkers.get(cb, np.nan)),
-            total_markers(cb_co_markers),
+            total_markers(cb_co_markers, raw_marker_counts.get(cb)),
             bg_frac.get(cb, np.nan),
             n_crossovers(cb_co_preds, min_co_prob=nco_min_prob),
-            marker_agreement_score(cb_co_markers, cb_co_pred_dosage, max_score=max_phred_score),
-            prediction_uncertainty_score(cb_co_pred_dosage, state_dosages),
+            marker_agreement_score(cb_co_markers, cb_co_dosage, max_score=max_phred_score),
+            prediction_uncertainty_score(cb_co_dosage, cb_co_calls),
             doublet_rate.get(cb, np.nan),
             marker_span_score(cb_co_markers),
-            haplotype_dosage_bias(cb_co_pred_dosage, expected_dosage)
+            haplotype_dosage_bias(cb_co_dosage, expected_dosage)
         ])
     qual_metrics = pd.DataFrame(
         qual_metrics,
@@ -256,8 +238,7 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     return qual_metrics
 
 
-def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False,
-                           state_dosages=None, max_score=10):
+def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, max_score=10):
     """
     Calculate a phred-like score from mean absolute haplotype dosage error.
 
@@ -267,8 +248,6 @@ def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False,
         A dictionary where keys are chromosomes and values are haplotype dosage arrays.
     cb_co_gt : dict
         A dictionary where keys are chromosomes and values are ground-truth haplotype dosage arrays.
-    thresholded : bool, optional
-        If True, round both predicted and ground-truth dosage before scoring.
     max_score : int, optional
         The maximum score (default is 10).
 
@@ -277,9 +256,6 @@ def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False,
     float
         The haplotype MAE score, capped at the provided `max_score`.
     """
-
-    if thresholded and state_dosages is None:
-        raise ValueError('need state_dosages when thresholded is True')
 
     abs_error = 0.0
     total_dosage = 0.0
@@ -294,10 +270,6 @@ def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, thresholded=False,
             raise ValueError(
                 f'prediction and ground truth shapes do not match: {p.shape} != {gt.shape}'
             )
-
-        if thresholded:
-            p = np.round(p)
-            gt = np.round(gt)
 
         abs_error += np.abs(p - gt).sum(axis=None)
         total_dosage += gt.sum(axis=None)
@@ -528,14 +500,8 @@ def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred
             continue
 
         cb_co_markers = co_markers[cb]
-        cb_co_pred_dosage = {
-            chrom: co_preds.get_haplotype_dosage(cb, chrom)
-            for chrom in co_preds.chrom_sizes
-        }
-        cb_co_gt_dosage = {
-            chrom: ground_truth.get_haplotype_dosage(cb, chrom)
-            for chrom in ground_truth.chrom_sizes
-        }
+        cb_co_pred_dosage = co_preds.get_haplotype_dosage(cb)
+        cb_co_gt_dosage = ground_truth.get_haplotype_dosage(cb)
         gt_co_precision, gt_co_recall = gt_crossover_precision_recall(
             cb_co_pred_dosage,
             cb_co_gt_dosage,

@@ -350,6 +350,17 @@ class RigidHMM:
         proba = np.concatenate(proba, axis=0)
         return proba
 
+    def _states_to_hap_probs(self, state_proba):
+        haplo_proba = state_proba @ self.state_haplotype_dosage
+        return np.clip(haplo_proba, 0, self.ploidy)
+
+    def _states_to_called_haps(self, state_proba):
+        state_idx = state_proba.argmax(axis=2)
+        called_haps = self.state_haplotype_dosage[state_idx]
+        if self.n_haplotypes == 2:
+            return called_haps[:, :, 1]
+        return called_haps
+
     def predict_haplo_proba(self, X, batch_size=128):
         """
         Predict marginal haplotype dosages for input marker arrays.
@@ -367,10 +378,9 @@ class RigidHMM:
             3D array of marginal haplotype dosages, with shape (N, L, n_haplotypes).
         """
         state_proba = self.predict_state_proba(X, batch_size)
-        haplo_proba = state_proba @ self.state_haplotype_dosage
-        return np.clip(haplo_proba, 0, self.ploidy)
+        return self._states_to_hap_probs(state_proba)
 
-    def predict(self, X, batch_size=128):
+    def predict(self, X, batch_size=128, return_called_haps=False):
         """
         Predict haplotype dosages for input marker arrays.
 
@@ -380,17 +390,26 @@ class RigidHMM:
             3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
+        return_called_haps : bool, optional
+            If True, also return hard haplotype calls from the most likely state.
 
         Returns
         -------
-        np.ndarray
+        np.ndarray or tuple[np.ndarray, np.ndarray]
             Scalar haplotype-1 dosage with shape (N, L) for two-haplotype models,
             otherwise marginal haplotype dosages with shape (N, L, n_haplotypes).
+            If ``return_called_haps`` is True, returns ``(haplo_proba, called_haps)``.
         """
-        haplo_proba = self.predict_haplo_proba(X, batch_size)
+        state_proba = self.predict_state_proba(X, batch_size)
+        haplo_proba = self._states_to_hap_probs(state_proba)
+
         if self.n_haplotypes == 2:
-            return haplo_proba[:, :, 1]
-        return haplo_proba
+            haplo_proba = haplo_proba[:, :, 1]
+
+        if not return_called_haps:
+            return haplo_proba
+
+        return haplo_proba, self._states_to_called_haps(state_proba)
 
     @torch.no_grad()
     def log_probability(self, X, batch_size=128):

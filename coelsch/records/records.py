@@ -4,6 +4,7 @@ import sys
 import inspect
 from copy import copy, deepcopy
 from collections import defaultdict
+import itertools as it
 import json
 
 import numpy as np
@@ -254,9 +255,8 @@ class BaseRecords(object):
 
     def deep_keys(self):
         '''iterable of deep keys (cell barcode, chrom pairs)'''
-        for cb, sd in self._records.items():
-            for chrom in sd:
-                yield chrom, sd
+        for cb, chrom, _ in self._records.deep_items():
+            yield cb, chrom
 
     def values(self):
         '''iterable of top level values (i.e. dict[chrom: marker array])'''
@@ -556,7 +556,7 @@ class BaseRecords(object):
             name: metadata.to_json(precision=None) for name, metadata in self.metadata.items()
         }
 
-    def to_json(self, precision: int = 5, encode_method="full"):
+    def to_json(self, precision: int = 3, encode_method="full"):
         """
         Convert the records object to a JSON string.
 
@@ -581,7 +581,7 @@ class BaseRecords(object):
             'metadata': self._metadata_to_json(),
         })
 
-    def write_json(self, fp: str, precision: int = 2):
+    def write_json(self, fp: str, precision: int = 3):
         """
         Write JSON representation to file.
 
@@ -715,9 +715,9 @@ class MarkerRecords(BaseRecords):
         Return the total number of markers for a barcode across all chromosomes
     add_cb_suffix(suffix, inplace=False)
         Append a suffix to all cell barcodes in object
-    to_json(precision=2)
+    to_json(precision=3)
         Convert the records object to a JSON string.
-    write_json(fp, precision=2)
+    write_json(fp, precision=3)
         Write the records object to a JSON file path.
     read_json(fp, subset=None, frozen=False)
         Read a BaseRecords object from a file path
@@ -818,7 +818,7 @@ class MarkerRecords(BaseRecords):
             tot += m.sum(axis=None)
         return tot
 
-    def to_json(self, precision: int = 5):
+    def to_json(self, precision: int = 3):
         return super().to_json(precision, encode_method='sparse')
 
 
@@ -883,11 +883,11 @@ class PredictionRecords(BaseRecords):
         Iterate over all cell barcodes for a given chromosome.
     add_cb_suffix(suffix, inplace=False)
         Append a suffix to all cell barcodes in object
-    to_json(precision=2)
+    to_json(precision=3)
         Convert the records object to a JSON string.
     to_frame(cb_whitelist=None):
         Convert the records object to a pandas DataFrame
-    write_json(fp, precision=2)
+    write_json(fp, precision=3)
         Write the records object to a JSON file path.
     read_json(fp, subset=None, frozen=False)
         Read a BaseRecords object from a file path
@@ -947,15 +947,68 @@ class PredictionRecords(BaseRecords):
             for meiosis_idx in range(len(states[0]))
         )
 
-    def get_haplotype_dosage(self, cb, chrom):
-        arr = self[cb, chrom]
-        if self._ndim == 1:
-            return np.stack([self.experiment_params.ploidy - arr, arr], axis=1)
+    def _as_haplotype_dosage(self, obj):
+        if isinstance(obj, NestedDataArray):
+            obj = copy(obj)
+            for *key, arr in obj.deep_items():
+                obj[tuple(key)] = self._as_haplotype_dosage(arr)
+            return obj
+
+        arr = np.asarray(obj, dtype=float)
+
+        if arr.ndim == 1:
+            return np.stack(
+                [self.experiment_params.ploidy - arr, arr],
+                axis=1,
+            )
+
+        if arr.ndim != 2:
+            raise ValueError('haplotype dosage must be scalar or matrix shaped')
+
+        if arr.shape[1] != self.experiment_params.n_haplotypes:
+            raise ValueError(
+                f'haplotype dosage has {arr.shape[1]} columns, expected '
+                f'{self.experiment_params.n_haplotypes}'
+            )
+
         return arr
 
-    def iter_scalar_haplotypes(self, chrom):
+    def _nearest_haplotype_state_dosage(self, dosage):
+        if isinstance(dosage, NestedDataArray):
+            dosage = copy(dosage)
+            for *key, arr in dosage.deep_items():
+                dosage[tuple(key)] = self._nearest_haplotype_state_dosage(arr)
+            return dosage
+
+        state_dosage = np.asarray(
+            self.experiment_params.haplotype_state_dosage_patterns,
+            dtype=float,
+        )
+        d = ((dosage[:, None, :] - state_dosage[None, :, :]) ** 2).sum(axis=2)
+        state = np.argmin(d, axis=1)
+        return state_dosage[state]
+
+    def get_haplotype_dosage(self, cb=None, chrom=None, as_called_haps=False):
+        if cb is None:
+            cb = slice(None)
+        if chrom is None:
+            chrom = slice(None)
+        if as_called_haps:
+            try:
+                return self._as_haplotype_dosage(
+                    self.metadata['called_haplotypes'][cb, chrom]
+                )
+            except KeyError:
+                dosage = self._as_haplotype_dosage(self[cb, chrom])
+                return self._nearest_haplotype_state_dosage(dosage)
+
+        return self._as_haplotype_dosage(self[cb, chrom])
+
+    def iter_scalar_haplotypes(self, chrom, as_called_haps=False):
         params = self.experiment_params
-        haps = self[:, chrom].stack_values()
+        haps = self.get_haplotype_dosage(
+            chrom=chrom, as_called_haps=as_called_haps
+        ).stack_values() # stacks to (n_samples, n_bins, n_haps)
 
         def require_matrix(strategy):
             if haps.ndim != 3:
@@ -998,47 +1051,30 @@ class PredictionRecords(BaseRecords):
 
         genotypes = self.metadata.get('genotypes', {})
         if cb not in genotypes:
-            raise ValueError(
-                f"PredictionRecords metadata['genotypes'] is missing sample {cb!r}"
-            )
-
-        genotype = GenotypeKey.from_any(genotypes[cb])
+            genotype = GenotypeKey.get_dummy_geno(self.experiment_params)
+        else:
+            genotype = GenotypeKey.from_any(genotypes[cb])
         genotype_keys = []
         for label in labels:
             mapped = tuple(genotype.founders[hap] for hap in label)
             pos_tree = mapped[0] if len(mapped) == 1 else mapped
-            genotype_keys.append(GenotypeKey(pos_tree))
+            genotype_keys.append(GenotypeKey(pos_tree, name=cb))
         return tuple(genotype_keys)
 
     def get_haplotype_labels(self, cb, chrom, as_genotype_keys=False):
-        arr = self[cb, chrom]
         labels = []
-
-        if self.experiment_params.crossing_strategy == 'f2':
-            if self._ndim != 1:
-                raise ValueError(
-                    'F2 PredictionRecords are expected to be scalar haplotype-1 dosages'
-                )
-            for p in arr:
-                if p < 0.5:
-                    labels.append((0, 0))
-                elif p > 1.5:
-                    labels.append((1, 1))
-                else:
-                    labels.append((0, 1))
-        else:
-            groups = self._haplotype_groups_by_meiosis()
-            dosage = self.get_haplotype_dosage(cb, chrom)
-            for row in dosage:
-                labels.append(
-                    tuple(max(group, key=lambda hap: row[hap]) for group in groups)
-                )
+        dosage = self.get_haplotype_dosage(cb, chrom, as_called_haps=True)
+        dosage = dosage.astype(int)
+        for bin_dosage in dosage:
+            bin_haps, = np.nonzero(bin_dosage)
+            # account for dosage
+            haps = tuple(np.repeat(bin_haps, bin_dosage[bin_haps]))
+            labels.append(haps)
 
         labels = tuple(labels)
         if as_genotype_keys:
             return self._haplotype_labels_to_genotype_keys(cb, labels)
         return labels
-
 
     def to_frame(self, cb_whitelist=None, dtype=None):
         """
@@ -1076,7 +1112,7 @@ class PredictionRecords(BaseRecords):
             )
         return pd.DataFrame(frame, index=cb_whitelist, columns=columns)
 
-    def get_haplotype(self, chrom, pos, cb_whitelist=None):
+    def haplotype_to_pandas(self, chrom, pos, cb_whitelist=None):
         """
         Retrieve prediction values across cell barcodes for a specific position.
 
@@ -1109,64 +1145,25 @@ class PredictionRecords(BaseRecords):
                 columns=range(self.experiment_params.n_haplotypes),
             )
 
-    def to_json(self, precision: int = 5):
-        return super().to_json(precision, encode_method='full')
+    def to_json(self, precision: int = 3):
+        return super().to_json(precision, encode_method='rle')
 
-    BED_HAPLOTYPE_PALETTE = ('#0072b2', '#d55e00', '#009e73', '#f0e442')
+    def write_bed(self, fn):
 
-    @staticmethod
-    def _hex_to_rgb(hex_color):
-        hex_color = hex_color.lstrip('#')
-        if len(hex_color) != 6:
-            raise ValueError(f'Invalid hex color {hex_color!r}')
-        return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-
-    @classmethod
-    def _bed_palette_rgb(cls, idx, palette=None):
-        if palette is None:
-            palette = cls.BED_HAPLOTYPE_PALETTE
-        return ','.join(map(str, cls._hex_to_rgb(palette[idx % len(palette)])))
-
-    def _bed_haplotype_state_colors(self, palette=None):
-        colors = {}
-        for state in self.experiment_params.haplotype_states:
-            state = tuple(state)
-            if state not in colors:
-                colors[state] = self._bed_palette_rgb(len(colors), palette=palette)
-        return colors
-
-    def _bed_haplotype_names(self, cb, haplotypes):
-        genotypes = self.metadata.get('genotypes', {})
-        if cb not in genotypes:
-            return tuple(str(hap) for hap in haplotypes)
-
-        from coelsch.experiment.genotypes import GenotypeKey
-        genotype = GenotypeKey.from_any(genotypes[cb])
-        return tuple(str(genotype.founders[hap]) for hap in haplotypes)
-
-    def write_bed(self, fn, precision: int = 2, palette=None):
         invs = []
         bs = self.bin_size
-        colors = self._bed_haplotype_state_colors(palette=palette)
-        for chrom, cs in self.chrom_sizes.items():
-            for cb in self.barcodes:
-                labels = self.get_haplotype_labels(cb, chrom)
-                i = 0
-                iv = labels[0]
-                for j, jv in enumerate(labels[1:], 1):
-                    if iv != jv:
-                        invs.append((chrom, i * bs, j * bs, cb, iv))
-                        i = j
-                        iv = jv
-                invs.append((chrom, i * bs, cs, cb, iv))
+        for cb, chrom in self.deep_keys():
+            cs = self.chrom_sizes[chrom]
+            
+            labels = self.get_haplotype_labels(cb, chrom, as_genotype_keys=True)
+            start = 0
+            for hap, segment in it.groupby(labels):
+                end = start + len(list(segment)) * bs
+                invs.append((chrom, start, end, cb, hap))
+                start = end
 
         invs.sort()
         with open(fn, 'w') as f:
-            for chrom, start, end, cb, haplotypes in invs:
-                haplotype_names = self._bed_haplotype_names(cb, haplotypes)
-                name = f'{cb}|{",".join(haplotype_names)}'
-                item_rgb = colors.get(tuple(haplotypes), self._bed_palette_rgb(0, palette=palette))
-                f.write(
-                    f'{chrom}\t{start:d}\t{end:d}\t{name}\t.\t.\t'
-                    f'{start:d}\t{end:d}\t{item_rgb}\n'
-                )
+            for chrom, start, end, cb, haps in invs:
+                name = f'{cb}|{",".join(haps.leaves)}'
+                f.write(f'{chrom}\t{start:d}\t{end:d}\t{name}\t.\t.\n')

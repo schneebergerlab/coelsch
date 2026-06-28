@@ -133,7 +133,7 @@ def run_predict(marker_json_fn, output_json_fn, *,
         co_preds.write_json(output_json_fn, output_precision)
         if write_bed:
             output_bed_fn = f'{os.path.splitext(output_json_fn)[0]}.bed'
-            co_preds.write_bed(output_bed_fn, precision=2)
+            co_preds.write_bed(output_bed_fn)
     return co_preds
 
 

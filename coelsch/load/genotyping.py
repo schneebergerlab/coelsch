@@ -409,7 +409,7 @@ def resolve_inv_counts_to_co_markers(inv_counts, genotypes, experimental_design)
                     continue
 
                 supported_haplotype = next(iter(supported))
-                hap_idx = geno.get_haplotype_index(supported_haplotype)
+                hap_idx = pg.get_haplotype_index(supported_haplotype)
                 resolved_ic[cb][hap_idx] += count
         resolved_inv_counts.append(resolved_ic)
     return resolved_inv_counts

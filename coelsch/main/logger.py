@@ -68,7 +68,7 @@ class ClickLogHandler(logging.Handler):
             msg = self.format(record)
             click.echo(msg, err=True)
             if record.levelno >= logging.ERROR:
-                click.echo(log_msg_formatter()(record.levelname, 'Unable to continue, exiting...'), err=True)
+                click.echo(format_log_msg(record.levelname, 'Unable to continue, exiting...'), err=True)
                 sys.exit(1)
         except Exception:
             self.handleError(record)

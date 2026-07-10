@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='coelsch',
-    version='1.0.0',
+    version='0.7.0',
     description=(
         'crossover mapping for single cell/nucleus sequencing data'
     ),

@@ -56,7 +56,7 @@ def nonzero_range(arr, axis=-1):
     return np.logical_and(fwd, rev)
 
 
-def calculate_cm_denominator(co_markers, apply_by):
+def calculate_cm_denominator(co_markers, apply_per_geno):
     """
     Calculate the denominator for recombination rate calculations based on marker data.
 
@@ -76,7 +76,7 @@ def calculate_cm_denominator(co_markers, apply_by):
         for recombination calculations for each chromosome.
     """
     denom = NestedDataArray(levels=('genotype', 'chrom'))
-    for geno, geno_co_markers in co_markers.groupby(by=apply_by):
+    for geno, geno_co_markers in co_markers.groupby(by='genotype' if apply_per_geno else 'none'):
         for chrom in co_markers.chrom_sizes:
             denom[geno, chrom] = nonzero_range(
                 geno_co_markers[:, chrom].stack_values().sum(axis=-1),
@@ -87,7 +87,7 @@ def calculate_cm_denominator(co_markers, apply_by):
 
 def recombination_landscape(co_preds,
                             co_markers=None,
-                            apply_by='none',
+                            apply_per_geno=True,
                             rolling_mean_window_size=1_000_000,
                             nboots=100,
                             min_prob=5e-3,
@@ -107,9 +107,8 @@ def recombination_landscape(co_preds,
         PredictionRecords object containing the haplotype predictions.
     co_markers : MarkerRecords, optional
         Marker records object used to scale the recombination rate. If None, no scaling is performed.
-    apply_by : bool, optional
-        How to group barcodes for recombination landscape calculation. Can be "none", "genotype" or a function
-        that is passed to PredictionRecords.groupby. Default is "none".
+    apply_per_geno : bool, optional
+        Whether to group barcodes by genotype for recombination landscape calculation. Default is True.
     rolling_mean_window_size : int, optional
         The size of the window for the rolling mean filter (default is 1,000,000).
     nboots : int, optional
@@ -121,9 +120,9 @@ def recombination_landscape(co_preds,
 
     Returns
     -------
-    NestedDataArray
-        Nested recombination-rate arrays keyed by group, scalar haplotype track, and chromosome.
-        Each leaf has shape ``(nboots, nbins)`` and contains cM/Mb estimates.
+    dict
+        A dictionary where the keys are chromosome names and the values are arrays of recombination
+        rates per megabase, calculated from bootstrapped samples.
 
     Raises
     ------
@@ -137,14 +136,28 @@ def recombination_landscape(co_preds,
     if co_markers is not None:
         if co_preds.barcodes != co_markers.barcodes:
             raise ValueError('Cell barcodes from marker-json-fn and predict-json-fn do not match')
-        denominators = calculate_cm_denominator(co_markers, apply_by)
+        denominators = calculate_cm_denominator(co_markers, apply_per_geno)
     else:
         denominators = None
 
-    cm_per_mb = NestedDataArray(levels=('genotype', 'track', 'chrom',))
-    for geno, geno_co_preds in co_preds.groupby(apply_by):
+    cm_per_mb = NestedDataArray(levels=('genotype', 'chrom',))
+    for geno, geno_co_preds in co_preds.groupby(by='genotype' if apply_per_geno else 'none'):
         N = len(geno_co_preds)
         for chrom, nbins in geno_co_preds.nbins.items():
+            chrom_hap_probs = geno_co_preds[:, chrom].stack_values()
+            chrom_co_probs = np.abs(np.diff(
+                chrom_hap_probs,
+                n=1,
+                axis=1,
+                prepend=chrom_hap_probs[:, 0].reshape(-1, 1)
+            ))
+            # filter gradients smaller than min_prob
+            chrom_co_probs = np.where(
+                chrom_co_probs >= min_prob, chrom_co_probs, 0
+            )
+            if co_preds.ploidy_type.startswith('diploid'):
+                chrom_co_probs *= 2
+            # filter gradients where there are no markers
             if denominators is not None:
                 chrom_denom = denominators[geno, chrom]
                 chrom_denom = convolve1d(
@@ -153,40 +166,28 @@ def recombination_landscape(co_preds,
                     mode='constant',
                     cval=0
                 )
+                chrom_co_probs = np.where(
+                    chrom_denom > 0,
+                    chrom_co_probs,
+                    0,
+                )
             else:
                 chrom_denom = np.ones(shape=(N, nbins))
-
-            for track_label, chrom_hap_probs in geno_co_preds.iter_scalar_haplotypes(chrom):
-                track_key = track_label or 'haplotype'
-                chrom_co_probs = np.abs(np.diff(
-                    chrom_hap_probs,
-                    n=1,
-                    axis=1,
-                    prepend=chrom_hap_probs[:, 0].reshape(-1, 1)
-                ))
-                chrom_co_probs = np.where(
-                    chrom_co_probs >= min_prob, chrom_co_probs, 0
+            # equivalent to rolling sum accounting for edge effects
+            chrom_co_probs = convolve1d(
+                chrom_co_probs, filt,
+                axis=1,
+                mode='constant',
+                cval=0
+            ) * nf
+            chrom_cm_per_mb = []
+            for _ in range(nboots):
+                idx = rng.integers(0, N, size=N)
+                chrom_cm_per_mb.append(
+                    (chrom_co_probs[idx].sum(axis=0) / chrom_denom[idx].sum(axis=0)) * 100
                 )
-                if denominators is not None:
-                    chrom_co_probs = np.where(
-                        chrom_denom > 0,
-                        chrom_co_probs,
-                        0,
-                    )
-                # equivalent to rolling sum accounting for edge effects
-                chrom_co_probs = convolve1d(
-                    chrom_co_probs, filt,
-                    axis=1,
-                    mode='constant',
-                    cval=0
-                ) * nf
-                chrom_cm_per_mb = []
-                for _ in range(nboots):
-                    idx = rng.integers(0, N, size=N)
-                    chrom_cm_per_mb.append(
-                        (chrom_co_probs[idx].sum(axis=0) / chrom_denom[idx].sum(axis=0)) * 100
-                    )
-                cm_per_mb[geno, track_key, chrom] = np.stack(chrom_cm_per_mb)
+            cm_per_mb[geno, chrom] = np.stack(chrom_cm_per_mb)
+    co_preds.add_metadata(recombination_landscape=cm_per_mb)
     return cm_per_mb
 
 
@@ -262,15 +263,12 @@ def _distances_expected(crossover_samples, max_pairs=200_000, only_adjacent=Fals
     
     exp = {}
     exp_pairs = {}
+    cos_per_chrom = np.mean([len(samp) for chrom_samples in crossover_samples.values() for samp in chrom_samples])
     for chrom, chrom_samples in crossover_samples.items():
         n_samples = len(chrom_samples)
         lam = np.mean([len(o) for o in chrom_samples])
         chrom_samples = np.concatenate(chrom_samples)
         chrom_exp = []
-        if chrom_samples.size == 0:
-            exp[chrom] = np.array([], dtype=float)
-            exp_pairs[chrom] = 0.0
-            continue
         if only_adjacent:
             for n_co in rng.poisson(lam, size=n_samples):
                 if n_co > 1:
@@ -320,12 +318,6 @@ def _coc_curve_sample(crossover_samples, bins, chrom_nbins, only_adjacent=False,
     for chrom in obs:
         obs_h, edges = np.histogram(obs[chrom], bins=bins[chrom])
         exp_h, _ = np.histogram(exp[chrom], bins=bins[chrom])
-        bin_mids[chrom] = 0.5 * (edges[:-1] + edges[1:])
-        if len(obs[chrom]) == 0 or len(exp[chrom]) == 0 or exp_pairs[chrom] == 0:
-            coc[chrom] = np.full(len(edges) - 1, np.nan, dtype=float)
-            Lint[chrom] = np.nan
-            continue
-
         frac_obs_pairs = obs_pairs[chrom] / exp_pairs[chrom]
         exp_h = exp_h / len(exp[chrom])
         obs_h = frac_obs_pairs * obs_h / len(obs[chrom])
@@ -340,7 +332,8 @@ def _coc_curve_sample(crossover_samples, bins, chrom_nbins, only_adjacent=False,
         elif len(exp[chrom]) > 0:
             Lint[chrom] =  1 - d_exp
         else:
-            Lint[chrom] = np.nan
+            Lint[chrom] = 1
+        bin_mids[chrom] = 0.5 * (edges[:-1] + edges[1:])
     return bin_mids, coc, Lint
 
 
@@ -400,45 +393,24 @@ def coefficient_of_coincidence(co_preds, nboots=100, min_dist=None, max_dist=Non
         raise ValueError('co_preds object lacking crossover_samples data')
     barcodes = co_pos_samples.get_level_keys('cb')
     sample_ids = co_pos_samples.get_level_keys('sample')
-    meioses = co_preds.experiment_params.recombining_haplotypes
     bootstrap_coc = {
-        meiosis: {
-            chrom: np.empty((nboots, len(bins[chrom]) - 1), dtype=float)
-            for chrom in chroms
-        }
-        for meiosis in meioses
+        chrom: np.empty((nboots, len(bins[chrom]) - 1), dtype=float)
+        for chrom in chroms
     }
-
     bootstrap_Lint = {
-        meiosis: {
-            chrom: np.empty(nboots, dtype=float)
-            for chrom in chroms
-        }
-        for meiosis in meioses
+        chrom : np.empty(nboots, dtype=float) for chrom in chroms
     }
     for i in range(nboots):
         # resample barcodes with replacement
         cb_sample = rng.choice(barcodes, size=nbarcodes, replace=True)
         samp_idx = rng.choice(sample_ids, size=nbarcodes, replace=True)
-        sample = {
-            meiosis: {chrom: [] for chrom in chroms}
-            for meiosis in meioses
-        }
+        sample = defaultdict(list)
         for cb, s in zip(cb_sample, samp_idx):
             for chrom in chroms:
-                sample_events = co_pos_samples[cb, chrom, s]
-                if sample_events.size == 0:
-                    for meiosis in meioses:
-                        sample[meiosis][chrom].append(np.array([], dtype=float))
-                    continue
-                sample_meioses = np.sort(sample_events[:, (1, 2)], axis=1)
-                for hap1, hap2 in meioses:
-                    idx = (sample_meioses[:, 0] == hap1) & (sample_meioses[:, 1] == hap2)
-                    sample[(hap1, hap2)][chrom].append(sample_events[idx, 0])
-        for meiosis, meiosis_sample in sample.items():
-            mids, coc, Lint = _coc_curve_sample(meiosis_sample, bins, max_dist, only_adjacent=only_adjacent, rng=rng)
-            for chrom in chroms:
-                bootstrap_coc[meiosis][chrom][i] = coc[chrom]
-                bootstrap_Lint[meiosis][chrom][i] = Lint[chrom] * co_preds.chrom_sizes[chrom]
+                sample[chrom].append(co_pos_samples[cb, chrom, s, :, 0])
+        mids, coc, Lint = _coc_curve_sample(sample, bins, max_dist, only_adjacent=only_adjacent, rng=rng)
+        for chrom in chroms:
+            bootstrap_coc[chrom][i] = coc[chrom]
+            bootstrap_Lint[chrom][i] = Lint[chrom] * co_preds.chrom_sizes[chrom]
     mids = {chrom: m * bin_size for chrom, m in mids.items()}
     return bootstrap_coc, mids, bootstrap_Lint

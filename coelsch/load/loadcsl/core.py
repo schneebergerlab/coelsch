@@ -4,10 +4,9 @@ import numpy as np
 
 from .utils import read_chrom_sizes
 from .csl import parse_cellsnp_lite
-from .vcf import read_vcf
+from .vcf import read_vcf, get_vcf_samples
 from ..counts import IntervalMarkerCounts
-from ..genotyping import genotype_from_inv_counts, resolve_inv_counts_to_co_markers
-from coelsch.experiment.genotypes import GenotypeKey
+from ..genotype import GenotypeKey, genotype_from_inv_counts
 from ..utils import genotyping_results_formatter
 from coelsch.records import MarkerRecords, NestedData
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -100,13 +99,11 @@ def parse_cellsnp_lite_interval_counts(csl_dir, bin_size, cb_whitelist,
     return list(inv_counts.values())
 
 
-def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
-                               experimental_design,
-                               bin_size, cb_whitelist,
+def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn, bin_size, cb_whitelist,
+                               seq_type=None, ploidy_type='haploid',
                                validate_barcodes=True, snp_counts_only=False,
-                               run_genotype=False, genotype_vcf_fn=None,
-                               reference_name='col0',
-                               genotype_kwargs=None):
+                               run_genotype=False, recombinant_mode=False, genotype_vcf_fn=None,
+                               reference_name='col0', genotype_kwargs=None):
     """
     Converts cellSNP-lite output into a MarkerRecords object, which represents
     haplotype marker distributions for each cell barcode. Optionally, genotyping 
@@ -122,12 +119,19 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
         The bin size for partitioning the genome into intervals.
     cb_whitelist : set
         A set of cell barcodes to include in the analysis.
+    seq_type : str or None
+        The type of sequencing data (e.g., "10x_atac", "10x_rna", "bd_rna", "takara", "wgs").
+    ploidy_type : str or None
+        A string describing the ploidy type and crossing strategy of the data
+        (e.g. "haploid", "diploid_bc1", "diploid_f2").
     validate_barcodes : bool, optional
         If True, validates sequenced barcodes to remove homopolymers and Ns (default is True).
     snp_counts_only : bool, optional
         Whether to only count SNPs, instead of the number of reads per SNP (default is False).
     run_genotype : bool, optional
         If True, performs genotyping of each barcode using the provided VCF files (default is False).
+    recombinant_mode : bool, optional
+        If True, parental genotypes are themselves recombinants provided in genotype_kwargs (default is False).
     genotype_vcf_fn : str, optional
         Path to the VCF file for genotyping. Required if `run_genotype` is True.
     reference_name : str, optional
@@ -146,13 +150,13 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
     ValueError
         If `run_genotype` is True but `genotype_vcf_fn` is not supplied.
     """
-    if run_genotype and genotype_vcf_fn is None:
+    if keep_genotype and genotype_vcf_fn is None:
         raise ValueError('must supply genotype_vcf_fn when using run_genotype')
 
     inv_counts = parse_cellsnp_lite_interval_counts(
         csl_dir, bin_size, cb_whitelist,
         snp_counts_only=snp_counts_only,
-        keep_genotype=genotype_vcf_fn is not None,
+        keep_genotype=run_genotype,
         genotype_vcf_fn=genotype_vcf_fn,
         validate_barcodes=validate_barcodes,
         reference_name=reference_name,
@@ -162,17 +166,22 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
     co_markers = MarkerRecords(
         chrom_sizes,
         bin_size,
-        experiment_params=experimental_design.experiment_params,
+        seq_type=seq_type,
+        ploidy_type=ploidy_type,
     )
 
     if genotype_kwargs is None:
         genotype_kwargs = {}
 
     if run_genotype:
+        if recombinant_mode and genotype_kwargs.get('crossing_combinations', None) is not None:
+            raise ValueError('Cannot provide crossing combinations when recombinant genotyping mode is switched on')
+        all_haplotypes = get_vcf_samples(genotype_vcf_fn, reference_name)
         (genotypes, genotype_probs,
          genotype_nmarkers, genotype_error_rates,
          inv_counts) = genotype_from_inv_counts(
-            inv_counts, experimental_design, **genotype_kwargs
+            inv_counts, recombinant_mode=recombinant_mode,
+            all_haplotypes=all_haplotypes, **genotype_kwargs
         )
         if log.isEnabledFor(logging.DEBUG):
             log.debug(genotyping_results_formatter(genotypes))
@@ -180,25 +189,23 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
             genotypes=genotypes,
             genotype_probability=genotype_probs,
             genotyping_nmarkers=genotype_nmarkers,
-            genotype_error_rates=genotype_error_rates
+            genotype_error_rates=genotype_error_rates,
         )
-    elif genotype_vcf_fn is not None:
-        if len(experimental_design.genotypes) != 1:
-            raise ValueError(
-                'If genotyping is switched off, only one crossing_combination or '
-                'haplotype combination is allowed'
+
+    elif reference_name is not None:
+        all_haplotypes = get_vcf_samples(genotype_vcf_fn, reference_name)
+        # we can infer the genotypes from the vcf file so long as there is only one non-ref sample
+        if len(all_haplotypes) == 2:
+            geno = GenotypeKey(all_haplotypes)
+            # create a dummy genotypes object where all barcodes have the same genotype
+            genotypes = NestedData(
+                levels=('cb',),
+                dtype=GenotypeKey,
+                data={cb: geno for ic in inv_counts for cb in ic.counts},
             )
-        geno = experimental_design.genotypes[0]
-        # create a dummy genotypes object where all barcodes have the same genotype
-        genotypes = NestedData(
-            levels=('cb',),
-            dtype=GenotypeKey,
-            data={cb: geno for ic in inv_counts for cb in ic.counts},
-        )
-        inv_counts = resolve_inv_counts_to_co_markers(inv_counts, genotypes, experimental_design)
-        co_markers.add_metadata(
-            genotypes=genotypes,
-        )
+            co_markers.add_metadata(
+                genotypes=genotypes,
+            )
 
     for ic in inv_counts:
         co_markers.update(ic)

@@ -21,21 +21,19 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
-    '--noise-fraction',
+    '--bg-marker-rate',
     subcommands=['sim'],
     required=False,
-    type=click.FloatRange(0.0, 0.99),
+    type=click.FloatRange(0.0, 0.49),
     default=None,
-    help=(
-        'Optional fixed fraction of markers to sample as uniform background noise. '
-        'Default is to estimate this per source barcode from marker/prediction agreement.'
-    )
+    help=('set uniform background marker rate for simulations. '
+          'Default is to estimate per cell barcode from markers')
 )
 
 
 coelsch_opts.option(
     '--bg-window-size',
-    subcommands=['clean', 'bam2pred', 'csl2pred'],
+    subcommands=['sim', 'clean', 'bam2pred', 'csl2pred'],
     required=False,
     type=click.IntRange(100_000, 10_000_000),
     default=2_500_000,
@@ -79,37 +77,6 @@ coelsch_opts.option(
     type=click.IntRange(1, 1000),
     default=10,
     help='the number of randomly selected cell barcodes to simulate per ground truth sample'
-)
-
-
-coelsch_opts.option(
-    '--threshold-ground-truth/--soft-ground-truth', 'thresholded',
-    subcommands=['sim'],
-    required=False,
-    default=True,
-    help='Whether to round source predictions and ground truth dosage before simulating markers.'
-)
-
-
-coelsch_opts.option(
-    '--target-crossing-strategy',
-    subcommands=['sim'],
-    required=False,
-    type=click.Choice(
-        ['f2', 'backcross', 'testcross', 'three_way', 'four_way'],
-        case_sensitive=False,
-    ),
-    default=None,
-    help='Optional crossing strategy to simulate by pooling compatible source channels.'
-)
-
-
-coelsch_opts.option(
-    '--sim-cross-only/--no-sim-cross-only',
-    subcommands=['sim'],
-    required=False,
-    default=False,
-    help='Only pool marker channels to the target crossing strategy; skip prediction/ground-truth simulation.'
 )
 
 

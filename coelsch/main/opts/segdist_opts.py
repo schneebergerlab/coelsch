@@ -6,7 +6,7 @@ coelsch_opts.option(
     '--segdist-order',
     subcommands=['segdist'],
     required=False,
-    type=click.IntRange(1, 3),
+    type=click.IntRange(1, 4),
     default=1,
     help='Number of loci to jointly test for distortion.'
 )

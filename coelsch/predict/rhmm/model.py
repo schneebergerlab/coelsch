@@ -11,7 +11,7 @@ from pomegranate.hmm import DenseHMM
 
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 from .dists import NegativeBinomial, ZeroInflated
-from . import utils
+from .utils import sorted_edit_distance, mask_array_zeros, numpy_to_torch
 
 
 log = logging.getLogger('coelsch')
@@ -88,33 +88,18 @@ class RigidHMM:
 
     def __init__(self, states, rfactor, term_rfactor, trans_prob,
                  fg_params, bg_params, dist_type='poisson', trans_prob_decay_rate=0.25,
-                 n_haplotypes=None, allow_uneven_ploidy=False, device=DEFAULT_DEVICE):
+                 device=DEFAULT_DEVICE):
         for hap_comb in states:
             if not isinstance(hap_comb, (tuple, list)):
                 raise ValueError(
                     'states should be a list/tuple of tuples, which represent haplotype combinations'
                 )
-        self.states = tuple(tuple(s) for s in states)
-        state_lengths = {len(state) for state in self.states}
-        if len(state_lengths) != 1:
-            if allow_uneven_ploidy:
-                # when states are uneven, use the shortest state length as ploidy
-                self.ploidy = min(state_lengths)
-            else:
-                raise ValueError('All HMM states must have the same ploidy')
-        else:
-            self.ploidy = state_lengths.pop()
-        self.allow_uneven_ploidy = allow_uneven_ploidy
-        if n_haplotypes is None:
-            n_haplotypes = max(hap for state in self.states for hap in state) + 1
-        self.n_haplotypes = int(n_haplotypes)
-        for hap_comb in self.states:
             for hap in hap_comb:
-                if hap < 0 or hap >= self.n_haplotypes:
-                    raise ValueError(
-                        f'haplotype index {hap} is outside marker channel range 0..{self.n_haplotypes - 1}'
-                    )
+                if hap not in (0, 1):
+                    raise ValueError('haplotypes can only be 0 or 1')
+        self.states = tuple(tuple(s) for s in states)
         self.nstates = len(self.states)
+        self._state_haplo = np.mean(self.states, axis=1)
         self.rfactor = int(rfactor)
         self.term_rfactor = int(term_rfactor)
         self.trans_prob = float(trans_prob)
@@ -173,67 +158,27 @@ class RigidHMM:
                     end=end_probs[i],
                 )
 
-    @property
-    def state_haplotype_dosage(self):
-        if not hasattr(self, '_state_haplotype_dosage'):
-            dosage = np.zeros((self.nstates, self.n_haplotypes), dtype=np.float32)
-            for i, state in enumerate(self.states):
-                for hap, count in Counter(state).items():
-                    dosage[i, hap] = min(count, self.ploidy)
-            self._state_haplotype_dosage = dosage
-        return self._state_haplotype_dosage
-
-    def set_state_haplotype_dosage(self, dosage):
-        # overrides dosages, required for some IndepedentMeiosesHMM designs
-        dosage = np.asarray(dosage, dtype=float)
-        if dosage.shape != (self.nstates, self.n_haplotypes):
-            raise ValueError('dosage must have shape (nstates, nhaplotypes)')
-        self._state_haplotype_dosage = dosage
-
-    def _create_distribution(self, state_idx):
-
-        def param_vector(params, key):
-            value = np.asarray(params[key], dtype=float)
-
-            if value.ndim == 0:
-                return np.full(self.n_haplotypes, float(value), dtype=float)
-
-            if value.shape != (self.n_haplotypes,):
-                raise ValueError(
-                    f"{key} has shape {value.shape}, expected scalar or "
-                    f"({self.n_haplotypes},)"
-                )
-
-            return value.copy()
-
-        priors = param_vector(self.bg_params, "empty_fraction")
-
-        if self.dist_type == "poisson":
-            lambdas = param_vector(self.bg_params, "lambda")
+    def _create_distribution(self, state):
+        priors = [self.bg_params['empty_fraction'], self.bg_params['empty_fraction']]
+        if self.dist_type == 'poisson':
+            lambdas = [self.bg_params['lambda'], self.bg_params['lambda']]
         else:
-            means = param_vector(self.bg_params, "mean")
-            alphas = param_vector(self.bg_params, "alpha")
-
-        for hap, count in enumerate(self.state_haplotype_dosage[state_idx]):
-            if count <= 0:
-                continue
-
-            priors[hap] = param_vector(self.fg_params, "empty_fraction")[hap]
-
+            means = [self.bg_params['mean'], self.bg_params['mean']]
+            alphas = [self.bg_params['alpha'], self.bg_params['alpha']]
+        for hap, count in Counter(state).items():
+            priors[hap] = self.fg_params['empty_fraction']
             if self.dist_type == "poisson":
-                lambdas[hap] = param_vector(self.fg_params, "lambda")[hap] * count
+                lambdas[hap] = self.fg_params["lambda"] * count
             else:
-                means[hap] = param_vector(self.fg_params, "mean")[hap] * count
-                alphas[hap] = param_vector(self.fg_params, "alpha")[hap]
-
-        if self.dist_type == "poisson":
+                means[hap] = self.fg_params['mean'] * count
+                alphas[hap] = self.fg_params['alpha']
+        if self.dist_type == 'poisson':
             return ZeroInflated(pmd.Poisson(lambdas), priors=priors)
+        else:
+            return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
 
-        return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
-
-    def _create_rigid_chain(self, state_idx):
-        state = self.states[state_idx]
-        dist = self._create_distribution(state_idx)
+    def _create_rigid_chain(self, state):
+        dist = self._create_distribution(state)
         self._distributions[state] = []
         for _ in range(self.rfactor):
             dist = deepcopy(dist)
@@ -275,7 +220,7 @@ class RigidHMM:
                 if self._transition_probs[i].co:
                     for other in self.states:
                         # only connect states with edit dist 1 with crossovers
-                        if utils.multiset_edit_distance(state, other) == 1:
+                        if sorted_edit_distance(state, other) == 1:
                             self._model.add_edge(
                                 self._distributions[state][i],
                                 self._distributions[other][0],
@@ -303,8 +248,8 @@ class RigidHMM:
         self._distributions = {}
         self._chains = {}
         self._model = DenseHMM(frozen=True)
-        for state_idx in range(self.nstates):
-            self._create_rigid_chain(state_idx)
+        for state in self.states:
+            self._create_rigid_chain(state)
         self._add_transitions()
         log.debug(f'moving model to device: {self._device}')
         self._model.to(self._device)
@@ -312,16 +257,16 @@ class RigidHMM:
             f'Finished initialising model with {self._model.n_distributions} distributions'
         )
 
-    @torch.no_grad()
+    torch.no_grad()
     def predict_state_proba(self, X, batch_size=128):
         """
-        Predict state probabilities for input marker arrays. Each state can represent a single
-        haplotype or a combination of haplotypes for diploid+ data.
+        Predicts state probabilities for input marker arrays. Each state can represent a single
+        haplotype (for haploid data) or a mixture of two or more haplotypes (for diploid+ data)
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
+            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
 
@@ -333,10 +278,10 @@ class RigidHMM:
         proba = []
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
             batch_size, chrom_size = X_batch.shape[:2]
-            X_batch = utils.numpy_to_torch(X_batch)
+            X_batch = numpy_to_torch(X_batch)
             if self._device is not None:
                 X_batch = X_batch.to(self._device)
-            p_batch = utils.torch_to_numpy(self._model.predict_proba(X_batch))
+            p_batch = self._model.predict_proba(X_batch).cpu().numpy()
             if np.isnan(p_batch).any():
                 log.warn(
                     'At least one sample is impossible under the rHMM. '
@@ -348,78 +293,56 @@ class RigidHMM:
             p_batch = p_batch.reshape(batch_size, chrom_size, self.nstates, self.rfactor).sum(axis=3)
             proba.append(p_batch)
         proba = np.concatenate(proba, axis=0)
+        # convert to single value per bin, representing the probability of alt hap
+
         return proba
-
-    def _states_to_hap_probs(self, state_proba):
-        haplo_proba = state_proba @ self.state_haplotype_dosage
-        return np.clip(haplo_proba, 0, self.ploidy)
-
-    def _states_to_called_haps(self, state_proba):
-        state_idx = state_proba.argmax(axis=2)
-        called_haps = self.state_haplotype_dosage[state_idx]
-        if self.n_haplotypes == 2:
-            return called_haps[:, :, 1]
-        return called_haps
 
     def predict_haplo_proba(self, X, batch_size=128):
         """
-        Predict marginal haplotype dosages for input marker arrays.
+        Predicts haplotype probabilities for input marker arrays.
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
+            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
 
         Returns
         -------
         np.ndarray
-            3D array of marginal haplotype dosages, with shape (N, L, n_haplotypes).
+            2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
         """
-        state_proba = self.predict_state_proba(X, batch_size)
-        return self._states_to_hap_probs(state_proba)
+        return np.clip(self.predict_state_proba(X, batch_size) @ self._state_haplo, 0, 1)
 
-    def predict(self, X, batch_size=128, return_called_haps=False):
+    def predict(self, X, batch_size=128):
         """
-        Predict haplotype dosages for input marker arrays.
+        Predicts haplotype probabilities for input marker arrays.
+        Alias to RigidHMM.predict_haplo_proba.
 
         Parameters
         ----------
         X : list of np.ndarray or np.ndarray
-            3D array of shape (N, L, n_haplotypes) containing haplotype-specific counts.
+            3D array of shape (N, L, 2) containing haplotype-specific read/variant counts per barcode.
         batch_size : int, optional
             Batch size for model prediction (default: 128).
-        return_called_haps : bool, optional
-            If True, also return hard haplotype calls from the most likely state.
 
         Returns
         -------
-        np.ndarray or tuple[np.ndarray, np.ndarray]
-            Scalar haplotype-1 dosage with shape (N, L) for two-haplotype models,
-            otherwise marginal haplotype dosages with shape (N, L, n_haplotypes).
-            If ``return_called_haps`` is True, returns ``(haplo_proba, called_haps)``.
+        np.ndarray
+            2D array of predicted probabilities of alternative haplotype (hap 1), with shape (N, L).
         """
-        state_proba = self.predict_state_proba(X, batch_size)
-        haplo_proba = self._states_to_hap_probs(state_proba)
-
-        if self.n_haplotypes == 2:
-            haplo_proba = haplo_proba[:, :, 1]
-
-        if not return_called_haps:
-            return haplo_proba
-
-        return haplo_proba, self._states_to_called_haps(state_proba)
+        return self.predict_haplo_proba(X, batch_size)
 
     @torch.no_grad()
     def log_probability(self, X, batch_size=128):
         logp = []
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
             batch_size, chrom_size = X_batch.shape[:2]
-            X_batch = utils.numpy_to_torch(X_batch)
+            X_batch = numpy_to_torch(X_batch)
             if self._device is not None:
                 X_batch = X_batch.to(self._device)
-            lp_batch = utils.torch_to_numpy(self._model.log_probability(X_batch))
+            lp_batch = self._model.log_probability(X_batch).cpu().numpy()
             if np.isnan(lp_batch).any():
                 log.warn(
                     'At least one sample is impossible under the rHMM. '
@@ -458,10 +381,7 @@ class RigidHMM:
 
         model = self._model
         n_seq, n_bins, n_haps = X.shape
-        if n_haps != self.n_haplotypes:
-            raise ValueError(
-                f'Input has {n_haps} haplotype channels, but model expects {self.n_haplotypes}'
-            )
+        assert n_haps == 2
         n_states = model.n_distributions
         rfactor = self.rfactor
         log_A = model.edges.to(self._device)
@@ -471,11 +391,11 @@ class RigidHMM:
                 return x._masked_data
             return x
 
-        X_samples = np.empty((n_seq, n, n_bins, n_haps), dtype=np.int16)
+        X_samples = np.empty((n_seq, n, n_bins), dtype=np.int16)
         offset = 0
 
         for X_batch in np.array_split(X, int(np.ceil(len(X) / batch_size))):
-            X_batch = utils.numpy_to_torch(X_batch)
+            X_batch = numpy_to_torch(X_batch)
             X_batch = X_batch.to(self._device, dtype=torch.float32)
             n_batch = X_batch.shape[0]
 
@@ -526,73 +446,56 @@ class RigidHMM:
                         )
                     log_p = torch.log_softmax(log_p, dim=1)
                     z[:, k, t] = torch.multinomial(torch.exp(log_p.double()), 1, generator=rng).squeeze(1)
-            z = utils.torch_to_numpy(
-                (z // rfactor).to(torch.int16)
-            )
-            X_samples[offset:offset + n_batch] = self.state_haplotype_dosage[z]
+            z = (z // rfactor).to(torch.int16).cpu().numpy()
+            X_samples[offset:offset + n_batch] = z
             offset += n_batch
 
-        return X_samples
+        return X_samples.squeeze()
 
     @property
     def params(self):
-        n = self.n_haplotypes
         return {
             'states': [list(s) for s in self.states],
-            'n_haplotypes': float(self.n_haplotypes),
             'rfactor': float(self.rfactor),
             'term_rfactor': float(self.term_rfactor),
             'trans_prob': float(self.trans_prob),
             'trans_prob_decay_rate': float(self.trans_prob_decay_rate),
             'is_poisson': 1.0 if self.dist_type == 'poisson' else 0.0,
-            'fg_lambda': list(self.fg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
-            'bg_lambda': list(self.bg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
-            'fg_mean': list(self.fg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
-            'bg_mean': list(self.bg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
-            'fg_alpha': list(self.fg_params['alpha']) if self.dist_type == 'nb' else [np.nan,] * n,
-            'bg_alpha': list(self.bg_params['alpha']) if self.dist_type == 'nb' else [np.nan,] * n,
-            'fg_empty_fraction': list(self.fg_params['empty_fraction']),
-            'bg_empty_fraction': list(self.bg_params['empty_fraction'])
+            'fg_lambda': self.fg_params['lambda'] if self.dist_type == 'poisson' else np.nan,
+            'bg_lambda': self.bg_params['lambda'] if self.dist_type == 'poisson' else np.nan,
+            'fg_mean': self.fg_params['mean'] if self.dist_type == 'nb' else np.nan,
+            'bg_mean': self.bg_params['mean'] if self.dist_type == 'nb' else np.nan,
+            'fg_alpha': self.fg_params['alpha'] if self.dist_type == 'nb' else np.nan,
+            'bg_alpha': self.bg_params['alpha'] if self.dist_type == 'nb' else np.nan,
+            'fg_empty_fraction': self.fg_params['empty_fraction'],
+            'bg_empty_fraction': self.bg_params['empty_fraction']
         }
 
     @classmethod
     def from_params(cls, params, device=DEFAULT_DEVICE):
-        if params.get('is_independent_meioses'):
-            msg = (
-                'These parameters describe an IndependentMeiosesHMM; use '
-                'IndependentMeiosesHMM.from_params instead of RigidHMM.from_params'
-            )
-            log.warning(msg)
-            raise ValueError(msg)
         if params['is_poisson']:
             fg_params = {
-                'lambda': np.array(params['fg_lambda']),
-                'empty_fraction': np.array(params['fg_empty_fraction'])
+                'lambda': params['fg_lambda'],
+                'empty_fraction': params['fg_empty_fraction']
             }
             bg_params = {
-                'lambda': np.array(params['bg_lambda']),
-                'empty_fraction': np.array(params['bg_empty_fraction'])
+                'lambda': params['bg_lambda'],
+                'empty_fraction': params['bg_empty_fraction']
             }
         else:
             fg_params = {
-                'mean': np.array(params['fg_mean']),
-                'alpha': np.array(params['fg_alpha']),
-                'empty_fraction': np.array(params['fg_empty_fraction'])
+                'mean': params['fg_mean'],
+                'alpha': params['fg_alpha'],
+                'empty_fraction': params['fg_empty_fraction']
             }
             bg_params = {
-                'mean': np.array(params['bg_mean']),
-                'alpha': np.array(params['bg_alpha']),
-                'empty_fraction': np.array(params['bg_empty_fraction'])
+                'mean': params['bg_mean'],
+                'alpha': params['bg_alpha'],
+                'empty_fraction': params['bg_empty_fraction']
             }
-        n_haplotypes = params.get('n_haplotypes')
-        if n_haplotypes is None:
-            n_haplotypes = max(hap for state in params['states'] for hap in state) + 1
-
         return cls(
             params['states'], params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
-            trans_prob_decay_rate=params['trans_prob_decay_rate'],
-            n_haplotypes=int(n_haplotypes),
-            device=device
+            trans_prob_decay_rate=params['trans_prob_decay_rate'], device=device
         )

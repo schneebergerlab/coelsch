@@ -70,6 +70,20 @@ def load_json(json_fn, cb_whitelist_fn, bin_size, data_type='markers', subset=No
     return data
 
 
+def validate_ploidy(data, ploidy_type):
+    if ploidy_type is None:
+        if data.ploidy_type is not None:
+            ploidy_type = data.ploidy_type
+        else:
+            # use haploid as fallback default
+            ploidy_type = 'haploid'
+    elif data.ploidy_type != ploidy_type:
+        log.warn(f'Recorded ploidy type of data is "{data.ploidy_type}", but specified '
+                 f'ploidy is "{ploidy_type}". This may not be intended.')
+    data.ploidy_type = ploidy_type
+    return ploidy_type
+
+
 def spawn_child_rngs(rng):
     """
     Spawn a series of random number generators (RNGs) based on a given parent RNG.

@@ -1,15 +1,12 @@
-import logging
 import click
 from .opts import coelsch_opts
 
-log = logging.getLogger('coelsch')
 
 @click.group()
 @click.version_option()
 def main():
     '''
-    coelsch: a toolkit for performing single cell and progeny-resequencing based
-    crossover and haplotyping analysis
+    coelsch: a toolkit for performing crossover mapping from single nucleus RNA/ATAC sequencing data
     '''
     pass
 
@@ -42,8 +39,8 @@ def loadcsl_subcommand(**kwargs):
 @coelsch_opts('sim')
 def sim_subcommand(**kwargs):
     '''
-    Simulate realistic haplotype marker distributions using source marker/prediction data,
-    with known haplotypes/crossovers supplied from a prediction JSON or legacy F1 BED file.
+    Simulate realistic haplotype marker distributions using real data from `load`,
+    with known haplotypes/crossovers supplied from a bed file.
     '''
     from coelsch.sim import run_sim
     run_sim(**kwargs)
@@ -107,7 +104,8 @@ def stats_subcommand(**kwargs):
 @coelsch_opts('segdist')
 def segdist_subcommand(**kwargs):
     '''
-    Measures deviations in inheritance from expected mendelian patterns
+    Scores the quality of data and predictions for a set of haplotype calls
+    generated with `predict`.
     '''
     from coelsch.distortion import run_segdist
     run_segdist(**kwargs)
@@ -122,16 +120,6 @@ def plot_subcommand(**kwargs):
     '''
     from coelsch.plot import run_plot
     run_plot(**kwargs)
-
-
-@main.command('inspect')
-@coelsch_opts('inspect')
-def inspect_subcommand(**kwargs):
-    '''
-    Inspect a MarkerRecords or PredictionRecords JSON file.
-    '''
-    from coelsch.inspect import run_inspect
-    run_inspect(**kwargs)
 
 
 def _clean_predict_pipeline(co_markers, output_prefix, kwargs):
@@ -187,13 +175,3 @@ def csl_pipeline_subcommand(**kwargs):
     loadcsl_kwargs['output_json_fn'] = f'{output_prefix}.markers_init.json'
     co_markers = run_loadcsl(**loadcsl_kwargs)
     _clean_predict_pipeline(co_markers, output_prefix, kwargs)
-
-
-@main.command('alaaf')
-@coelsch_opts('alaaf')
-def alaaf(**kwargs):
-    '''
-    How to cite coelsch
-    '''
-    from .utils import kolle_alaaf
-    log.info(kolle_alaaf())

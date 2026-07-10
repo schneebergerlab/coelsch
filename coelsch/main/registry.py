@@ -1,5 +1,4 @@
 from functools import wraps
-from collections import defaultdict
 import click
 
 
@@ -7,7 +6,7 @@ class OptionRegistry:
 
     def __init__(self, subcommands):
         self.subcommands = subcommands
-        self.register = defaultdict(dict)
+        self.register = {}
         self.callback_register = {}
 
     def register_param(self, click_param, args, kwargs):
@@ -21,6 +20,8 @@ class OptionRegistry:
         for sc in subcommands:
             if sc not in self.subcommands:
                 raise ValueError(f'subcommand {sc} is not pre-registered')
+            if sc not in self.register:
+                self.register[sc] = {}
             self.register[sc][name] = opt
 
     def argument(self, *args, **kwargs):

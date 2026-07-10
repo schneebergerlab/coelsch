@@ -1,13 +1,26 @@
 import numpy as np
 from pomegranate import distributions as pmd
 
-from coelsch.records import MarkerRecords, NestedData, NestedDataArray
+from coelsch.records import MarkerRecords
 from coelsch.predict.rhmm.dists import ZeroInflated
-from .bias import compute_bias_factor
+
+
+def _compute_bias_factor(co_markers, hap_bias_shrinkage=0.75, bc_haplotype=0):
+    if co_markers.ploidy_type == 'diploid_bc1':
+        expected_ratio = (3, 1) if bc_haplotype == 0 else (1, 3)
+    else:
+        expected_ratio = (1, 1)
+    hap_totals = np.sum([m.sum(axis=0) for m in co_markers.deep_values()], axis=0)
+    expected = np.array(expected_ratio, dtype=float)
+    expected /= expected.sum()
+    observed = hap_totals / hap_totals.sum()
+    raw_factor = observed / expected
+    bias_factor = 1.0 + hap_bias_shrinkage * (raw_factor - 1.0)
+    return bias_factor
 
 
 def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, max_upweight=4.0,
-                           binwise_hap_mode='shared', correct_hap_bias=True, hap_bias_correction_strength=0.75):
+                           binwise_hap_mode='shared', correct_hap_bias=True, hap_bias_shrinkage=0.75):
     """
     Normalise per-bin coverage across chromosomes by shrinking extreme coverage values.
 
@@ -45,7 +58,7 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
     correct_hap_bias : bool, optional, default=True
         Whether to correct for global reference/alternate haplotype count imbalance
         prior to per-bin normalisation.
-    hap_bias_correction_strength : float, optional, default=0.75
+    hap_bias_shrinkage : float, optional, default=0.75
         Shrinkage parameter used when estimating the haplotype bias correction.
     Notes
     -----
@@ -55,7 +68,6 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
     """
     tot = {}
     n_cb = len(co_markers)
-    n_haplotypes = co_markers.n_haplotypes
 
     shared = (binwise_hap_mode == "shared")
     if binwise_hap_mode not in ("shared", "independent"):
@@ -66,9 +78,9 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
         tot[chrom] = mc.copy() if chrom not in tot else (tot[chrom] + mc)
     bin_means = {chrom: t / n_cb for chrom, t in tot.items()}
     if correct_hap_bias:
-        bias_factor = compute_bias_factor(co_markers, hap_bias_correction_strength)
+        bias_factor = _compute_bias_factor(co_markers, hap_bias_shrinkage)
     else:
-        bias_factor = np.ones(shape=n_haplotypes)
+        bias_factor = np.ones(shape=2)
 
     target_q = shrinkage_q if not allow_upweight else 0.5
     lambdas = {
@@ -96,18 +108,6 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
     for cb, chrom, m in co_markers.deep_items():
         scaled = m * norm_factor[chrom] / bias_factor[None, :]
         co_markers_n[cb, chrom] = np.round(scaled).astype(int)
-
-    co_markers_n.add_metadata(
-        haplotype_bias_factor=NestedData(
-            levels=('haplotype',),
-            dtype=(float,),
-            data={str(i): float(v) for i, v in enumerate(bias_factor)},
-        ),
-        bin_normalisation_factor=NestedDataArray(
-            levels=('chrom',),
-            data={chrom: nf.astype(float, copy=False) for chrom, nf in norm_factor.items()},
-        ),
-    )
 
     return co_markers_n
 
@@ -158,16 +158,8 @@ def normalise_barcode_depth(co_markers, min_norm_factor=2.0):
     """
     lambdas = {cb: _estimate_zip_lambda(co_markers[cb]) for cb in co_markers.barcodes}
     norm_factor = np.maximum(np.median(list(lambdas.values())), min_norm_factor)
-    depth_factors = {cb: norm_factor / lambdas[cb] for cb in co_markers.barcodes}
     co_markers_n = MarkerRecords.new_like(co_markers)
     for cb, chrom, m in co_markers.deep_items():
-        scaled = m * depth_factors[cb]
+        scaled = m / lambdas[cb] * norm_factor
         co_markers_n[cb, chrom] = np.round(scaled).astype(int)
-    co_markers_n.add_metadata(
-        barcode_depth_normalisation_factor=NestedData(
-            levels=('cb',),
-            dtype=(float,),
-            data={cb: float(v) for cb, v in depth_factors.items()},
-        )
-    )
     return co_markers_n

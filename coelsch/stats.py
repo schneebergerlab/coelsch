@@ -1,14 +1,17 @@
 import logging
+from collections import defaultdict
 import numpy as np
 import pandas as pd
+from scipy.ndimage import convolve1d
+
 from .utils import load_json
-from .records import PredictionRecords
+from .sim import ground_truth_from_marker_records
 
 
 log = logging.getLogger('coelsch')
 
 
-def total_markers(cb_co_markers, raw_total_markers=None):
+def total_markers(cb_co_markers):
     """
     Calculates the total number of markers for a cell barcode.
 
@@ -22,8 +25,6 @@ def total_markers(cb_co_markers, raw_total_markers=None):
     float
         The log-transformed total number of markers (base 10).
     """
-    if raw_total_markers is not None:
-        return np.log10(raw_total_markers)
     tot = 0
     for m in cb_co_markers.values():
         tot += m.sum(axis=None)
@@ -32,119 +33,85 @@ def total_markers(cb_co_markers, raw_total_markers=None):
 
 def n_crossovers(cb_co_preds, min_co_prob=5e-3):
     """
-    Count expected crossovers from haplotype dosage changes along the genome.
+    Counts the number of crossovers detected for a barcode based on prediction probabilities.
 
-    Scalar two-haplotype records store haplotype-1 dosage, so absolute changes
-    directly count changed inherited copies. Multi-haplotype records store full
-    dosage rows, where half the L1 dosage change counts the number of changed
-    inherited copies.
+    Parameters
+    ----------
+    cb_co_preds : dict
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+    min_co_prob : float, optional
+        The minimum probability threshold for accumulating the crossover probability between two bins
+        (default is 5e-3).
+
+    Returns
+    -------
+    float
+        The estimated total number of crossovers (as a float) detected across all barcodes.
     """
     nco = 0
     for p in cb_co_preds.values():
-        if p.ndim == 1:
-            p_co = np.abs(np.diff(p, axis=0))
-        elif p.ndim == 2:
-            p_co = 0.5 * np.abs(np.diff(p, axis=0)).sum(axis=1)
-        else:
-            raise ValueError('prediction arrays must be 1D or 2D')
-
+        p_co = np.abs(np.diff(p))
         p_co = np.where(p_co >= min_co_prob, p_co, 0)
         nco += p_co.sum(axis=None)
     return nco
 
 
+def accuracy_score(cb_co_markers, cb_co_preds, max_score=10):
+    """
+    Calculates a measure of prediction accuracy based on haplotype predictions and observed markers.
 
-def _error_rate(n, d, pseudo=0.5):
-    return (d - n + pseudo) / (d + pseudo + pseudo)
+    Parameters
+    ----------
+    cb_co_markers : dict
+        A dictionary where keys are chromosomes and values are arrays representing marker counts.
+    cb_co_preds : 
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+    max_score : int, optional
+        The maximum score for accuracy (default is 10).
 
-
-def _chrom_agreement(m, p):
-    if p.ndim != 2:
-        raise ValueError('prediction dosage array must be 2D')
-
-    if m.shape != p.shape:
-        raise ValueError(
-            f"marker and prediction shapes do not match: {m.shape} != {p.shape}"
-        )
-
-    total = m.sum(axis=None)
-    p = np.clip(p, 0.0, 1.0)
-    agreement = (m * p).sum(axis=None)
-    return agreement, total
-
-
-def _marker_agreement_totals(cb_co_markers, cb_co_preds):
-    agreement = 0.0
-    total = 0.0
-
+    Returns
+    -------
+    float
+        The accuracy score on a phred-like scale, capped at the provided `max_score`.
+    """
+    nom = 0
+    denom = 0
     for chrom, m in cb_co_markers.items():
         p = cb_co_preds[chrom]
-        n, d = _chrom_agreement(m, p)
-        agreement += n
-        total += d
-
-    return agreement, total
-
-
-def marker_agreement_fraction(cb_co_markers, cb_co_preds):
-    agreement, total = _marker_agreement_totals(cb_co_markers, cb_co_preds)
-    if total <= 0:
-        return np.nan
-    return agreement / total
+        nom += (m[:, 0] * (1 - p)).sum() + (m[:, 1] * p).sum()
+        denom += m.sum(axis=None)
+    ratio = nom / denom if denom > 0 else 0
+    delta = 1 - ratio
+    if delta <= 2 ** -max_score:
+        return max_score
+    return -np.log2(delta)
 
 
-def marker_agreement_score(cb_co_markers, cb_co_preds, max_score=10, pseudo=0.5):
-    agreement, total = _marker_agreement_totals(cb_co_markers, cb_co_preds)
-
-    if total <= 0:
-        return np.nan
-
-    error_rate = _error_rate(agreement, total, pseudo)
-    with np.errstate(divide='ignore'):
-        return np.minimum(-np.log2(error_rate), max_score)
-
-
-def aneuploidy_score(cb_co_markers, cb_co_preds, pseudo=0.5):
-    noms = []
-    denoms = []
-    max_error_idx = None
-    max_error_rate = 0.0
-    for i, (chrom, m) in enumerate(cb_co_markers.items()):
-        p = cb_co_preds[chrom]
-        n, d = _chrom_agreement(m, p)
-        noms.append(n)
-        denoms.append(d)
-        e = _error_rate(n, d, pseudo)
-        if e > max_error_rate:
-            max_error_idx = i
-            max_error_rate = e
-    max_error_nom = noms.pop(max_error_idx)
-    max_error_denom = denoms.pop(max_error_idx)
-    bg_error_nom = sum(noms)
-    bg_error_denom = sum(denoms)
-
-    return np.log2(
-        _error_rate(max_error_nom, max_error_denom, pseudo) / 
-        _error_rate(bg_error_nom, bg_error_denom, pseudo)
-    )
-    
-
-def prediction_uncertainty_score(cb_co_preds, cb_co_calls):
+def uncertainty_score(cb_co_preds):
     """
-    Calculates uncertainty as deviation from hard haplotype dosage calls.
+    Calculates a measure of model uncertainty based on haplotype predictions.
+
+    Parameters
+    ----------
+    cb_co_preds : dict
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+
+    Returns
+    -------
+    float
+        The uncertainty score (log-transformed auc of difference between prediction and prediction probability).
     """
     auc = 0
-    for chrom, p in cb_co_preds.items():
-        p_t = cb_co_calls[chrom]
-        hu = np.abs(p - p_t).sum(axis=1) / p.sum(axis=1)
-        auc += np.trapz(hu)
+    for p in cb_co_preds.values():
+        hu = np.abs(p - (p > 0.5))
+        auc += np.trapz(hu).sum(axis=None)
     with np.errstate(divide='ignore'):
         return np.maximum(np.log10(auc), 0)
 
 
-def marker_span_score(cb_co_markers, max_score=10):
+def coverage_score(cb_co_markers, max_score=10):
     """
-    Calculates a marker span score for a cell barcode.
+    Calculates a measure of coverage of the genome based on the markers for a cell barcode.
 
     Parameters
     ----------
@@ -156,7 +123,7 @@ def marker_span_score(cb_co_markers, max_score=10):
     Returns
     -------
     float
-        The marker span score on a phred-like scale, capped at the provided `max_score`.
+        The coverage score on a phred-like scale, capped at the provided `max_score`.
     """
     cov = 0
     tot = 0
@@ -172,16 +139,26 @@ def marker_span_score(cb_co_markers, max_score=10):
     return -np.log2(delta)
 
 
-def haplotype_dosage_bias(cb_co_pred_dosage, expected_dosage):
-    dosage = np.concatenate(list(cb_co_pred_dosage.values()), axis=0)
-    observed = dosage.mean(axis=0)
-    expected_dosage = np.asarray(expected_dosage, dtype=np.float32)
-    return np.abs(observed - expected_dosage).sum() / expected_dosage.sum()
-
-
-def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_phred_score=10):
+def mean_haplotype(cb_co_preds):
     """
-    Calculates prediction metrics for each cell barcode's marker and prediction data.
+    Calculates the mean haplotype of a barcode.
+
+    Parameters
+    ----------
+    cb_co_preds : dict
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+
+    Returns
+    -------
+    float
+        The mean haplotype value for the barcode.
+    """
+    return np.concatenate(list(cb_co_preds.values())).mean()
+
+
+def calculate_quality_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_phred_score=10):
+    """
+    Calculates various quality metrics for each cell barcode's marker and prediction data.
 
     Parameters
     ----------
@@ -197,7 +174,7 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     Returns
     -------
     pd.DataFrame
-        A DataFrame containing the calculated prediction metrics for each cell barcode.
+        A DataFrame containing the calculated quality metrics for each cell barcode.
     """
     qual_metrics = []
 
@@ -206,203 +183,118 @@ def calculate_prediction_metrics(co_markers, co_preds, nco_min_prob=2.5e-3, max_
     genotype_nmarkers = co_markers.metadata.get('genotyping_nmarkers', {})
     bg_frac = co_markers.metadata.get('estimated_background_fraction', {})
     doublet_rate = co_preds.metadata.get('doublet_probability', {})
-    expected_dosage = co_preds.experiment_params.haplotype_dosage
-    raw_marker_counts = co_markers.metadata.get('raw_total_marker_count', {})
+
+    co_mult_factor = 2 if co_preds.ploidy_type.startswith('diploid') else 1
 
     for cb, cb_co_markers in co_markers.items():
         cb_co_preds = co_preds[cb]
-        cb_co_dosage = co_preds.get_haplotype_dosage(cb)
-        cb_co_calls = co_preds.get_haplotype_dosage(cb, as_called_haps=True)
         qual_metrics.append([
             cb,
             genotypes.get(cb, None),
             genotype_probs.get(cb, np.nan),
             np.log10(genotype_nmarkers.get(cb, np.nan)),
-            total_markers(cb_co_markers, raw_marker_counts.get(cb)),
+            total_markers(cb_co_markers),
             bg_frac.get(cb, np.nan),
-            n_crossovers(cb_co_preds, min_co_prob=nco_min_prob),
-            marker_agreement_score(cb_co_markers, cb_co_dosage, max_score=max_phred_score),
-            prediction_uncertainty_score(cb_co_dosage, cb_co_calls),
+            n_crossovers(cb_co_preds, min_co_prob=nco_min_prob) * co_mult_factor,
+            accuracy_score(cb_co_markers, cb_co_preds, max_score=max_phred_score),
+            uncertainty_score(cb_co_preds),
             doublet_rate.get(cb, np.nan),
-            marker_span_score(cb_co_markers),
-            haplotype_dosage_bias(cb_co_dosage, expected_dosage)
+            coverage_score(cb_co_markers),
+            mean_haplotype(cb_co_preds)
         ])
     qual_metrics = pd.DataFrame(
         qual_metrics,
         columns=['cb', 'geno_pred', 'geno_prob', 'geno_n_marker_reads',
                  'co_n_marker_reads', 'bg_fraction', 'n_crossovers',
-                 'marker_agreement_score', 'prediction_uncertainty_score',
+                 'accuracy_score', 'uncertainty_score',
                  'doublet_probability',
-                 'marker_span_score', 'haplotype_dosage_bias']
+                 'coverage_score', 'mean_haplotype']
     )
     return qual_metrics
 
 
-def gt_haplotype_mae_score(cb_co_preds, cb_co_gt, max_score=10):
+def gt_haplotype_accuracy_score(cb_co_preds, cb_co_gt, thresholded=False, max_score=10):
     """
-    Calculate a phred-like score from mean absolute haplotype dosage error.
+    Calculates the accuracy score for genotypes based on predicted and ground truth haplotypes.
 
     Parameters
     ----------
     cb_co_preds : dict
-        A dictionary where keys are chromosomes and values are haplotype dosage arrays.
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
     cb_co_gt : dict
-        A dictionary where keys are chromosomes and values are ground-truth haplotype dosage arrays.
+        A dictionary where keys are chromosomes and values are arrays representing ground truth haplotypes.
+    thresholded : bool, optional
+        If True, thresholds the predictions at 0.5 before calculating the accuracy score (default is False).
     max_score : int, optional
-        The maximum score (default is 10).
+        The maximum score for accuracy (default is 10).
 
     Returns
     -------
     float
-        The haplotype MAE score, capped at the provided `max_score`.
+        The haplotype accuracy score on a phred-like scale, capped at the provided `max_score`.
     """
+    dev = 0
+    nbins = 0
+    for chrom, p in cb_co_preds.items():
+        if thresholded:
+            p = (p > 0.5).astype(np.float32)
+        gt = cb_co_gt[chrom]
+        dev += np.abs(p - gt).sum(axis=None)
+        nbins += len(p)
+    with np.errstate(divide='ignore'):
+        return np.minimum(-np.log2(dev / nbins), max_score)
 
-    abs_error = 0.0
-    total_dosage = 0.0
 
+def _co_score(p, gt, ws=40):
+    assert not ws % 2
+    filt = np.ones(ws) / ws
+    filt[: ws // 2] = np.negative(filt[: ws // 2])
+    gt_c = convolve1d((gt - 0.5) * 2, filt, mode='nearest')
+    p_c = convolve1d((p - 0.5) * 2, filt, mode='nearest')
+    return np.trapz(gt_c * p_c)
+
+
+def gt_co_score(cb_co_preds, cb_co_gt, window_size=40):
+    """
+    Calculates the crossover score between predicted and ground truth haplotypes.
+
+    Parameters
+    ----------
+    cb_co_preds : dict
+        A dictionary where keys are chromosomes and values are arrays representing haplotype probabilities.
+    cb_co_gt : dict
+        A dictionary where keys are chromosomes and values are arrays representing ground truth haplotypes.
+    window_size : int, optional
+        The window size for the filter (default is 40).
+
+    Returns
+    -------
+    float
+        The calculated crossover score, or NaN if no crossovers are detected.
+    """
+    n_co = n_crossovers(cb_co_gt)
+    if not n_co:
+        return np.nan
+    co = 0
     for chrom, p in cb_co_preds.items():
         gt = cb_co_gt[chrom]
-
-        if p.ndim != 2 or gt.ndim != 2:
-            raise ValueError('gt_haplotype_mae_score requires dosage matrices')
-
-        if p.shape != gt.shape:
-            raise ValueError(
-                f'prediction and ground truth shapes do not match: {p.shape} != {gt.shape}'
-            )
-
-        abs_error += np.abs(p - gt).sum(axis=None)
-        total_dosage += gt.sum(axis=None)
-
-    if total_dosage <= 0:
-        return np.nan
-
-    mae = abs_error / total_dosage
-    if mae <= 0:
-        return max_score
-
-    with np.errstate(divide='ignore'):
-        return np.minimum(-np.log2(mae), max_score)
-
-
-def _dosage_edge_signal(dosage):
-    """
-    Convert haplotype dosage into crossover edge mass.
-
-    Each edge is the expected number of inherited haplotype-copy switches
-    between adjacent bins.
-    """
-    if dosage.ndim != 2:
-        raise ValueError('crossover scoring requires dosage matrices')
-
-    return 0.5 * np.abs(np.diff(dosage, axis=0)).sum(axis=1)
-
-
-def _edge_window(edge, window_size):
-    """
-    Mark positions close enough to crossover edges to receive credit.
-
-    The returned array is clipped to [0, 1], so overlapping windows do not give
-    extra credit and perfect overlap remains bounded at precision/recall = 1.
-    """
-    if window_size <= 0:
-        raise ValueError('window_size must be > 0')
-
-    target = np.zeros_like(edge, dtype=float)
-    half = window_size // 2
-
-    for idx, mass in enumerate(edge):
-        if mass <= 0:
-            continue
-
-        # Clip the local window at chromosome boundaries.
-        start = max(0, idx - half)
-        end = min(len(edge), idx + half + 1)
-        target[start:end] = 1.0
-
-    return target
-
-
-def gt_crossover_precision_recall(cb_co_preds, cb_co_gt, window_size=40):
-    """
-    Calculate crossover precision and recall from haplotype dosage edges.
-
-    Both inputs must be dictionaries of chrom -> haplotype dosage matrix. Recall
-    asks what fraction of true crossover edge mass was recovered nearby, while
-    precision asks what fraction of predicted crossover edge mass is near truth.
-    """
-    recall_overlap = 0.0
-    precision_overlap = 0.0
-    true_mass = 0.0
-    pred_mass = 0.0
-
-    for chrom, pred in cb_co_preds.items():
-        gt = cb_co_gt[chrom]
-
-        if pred.ndim != 2 or gt.ndim != 2:
-            raise ValueError('crossover scoring requires dosage matrices')
-
-        if pred.shape != gt.shape:
-            raise ValueError(
-                f'prediction and ground truth shapes do not match: {pred.shape} != {gt.shape}'
-            )
-
-        pred_edge = _dosage_edge_signal(pred)
-        gt_edge = _dosage_edge_signal(gt)
-
-        chrom_true_mass = gt_edge.sum()
-        chrom_pred_mass = pred_edge.sum()
-        true_mass += chrom_true_mass
-        pred_mass += chrom_pred_mass
-
-        if chrom_true_mass > 0:
-            # True-edge windows give predicted edges partial credit when close to truth.
-            gt_window = _edge_window(gt_edge, window_size)
-            recall_overlap += np.sum(pred_edge * gt_window)
-
-        if chrom_pred_mass > 0:
-            # Predicted-edge windows give true edges partial credit when close to prediction.
-            pred_window = _edge_window(pred_edge, window_size)
-            precision_overlap += np.sum(gt_edge * pred_window)
-
-    recall = np.nan if true_mass <= 0 else recall_overlap / true_mass
-    precision = np.nan if pred_mass <= 0 else precision_overlap / pred_mass
-
-    return (
-        np.clip(precision, 0.0, 1.0) if not np.isnan(precision) else np.nan,
-        np.clip(recall, 0.0, 1.0) if not np.isnan(recall) else np.nan,
-    )
+        co += _co_score(p, gt, window_size)
+    return np.log10(np.maximum(co / n_co, 1))
 
 
 def _max_detectable_cos(m, gt):
-    if gt.ndim != 2:
-        raise ValueError('ground truth must be a dosage matrix')
-    if m.shape != gt.shape:
-        raise ValueError(
-            f'marker and ground truth shapes do not match: {m.shape} != {gt.shape}'
-        )
-
-    co_idx = np.where(np.any(np.diff(gt, axis=0), axis=1))[0] + 1
-    if co_idx.size == 0:
-        return 0
-
+    co_idx = np.where(np.diff(gt))[0] + 1
     m_seg = np.array_split(m, co_idx, axis=0)
-    seg_gt = gt[np.insert(co_idx, 0, 0)]
-    supported_gt = []
-
-    for seg, dosage in zip(m_seg, seg_gt):
-        inherited = dosage > 0
-        if inherited.any() and seg[:, inherited].sum() > 0:
-            supported_gt.append(dosage)
-
-    if len(supported_gt) < 2:
-        return 0
-
-    supported_gt = np.asarray(supported_gt)
-    return np.any(np.diff(supported_gt, axis=0), axis=1).sum()
+    seg_haps = gt[np.insert(co_idx, 0, 0)].astype(int)
+    supported_haps = []
+    for seg, h in zip(m_seg, seg_haps):
+        support = seg[:, h].sum()
+        if support:
+            supported_haps.append(h)
+    return len(np.where(np.diff(supported_haps))[0])
 
 
-def gt_detectable_crossovers(cb_co_markers, cb_co_gt):
+def gt_max_detectable_cos(cb_co_markers, cb_co_gt):
     """
     Calculates the maximum number of crossovers from the ground truth that could possibly be detected using
     the given distribution of markers - some crossovers are invisible due to lack of markers in segments.
@@ -426,45 +318,9 @@ def gt_detectable_crossovers(cb_co_markers, cb_co_gt):
     return dcos
 
 
-def _nanmean(values):
-    values = np.asarray(values, dtype=float)
-    if values.size == 0 or np.isnan(values).all():
-        return np.nan
-    return np.nanmean(values)
-
-
-def co_sample_assignment_metrics(cb_co_assignments, bin_size):
-
-    precision = []
-    recall = []
-    fdr = []
-    matched_distances = []
-    for *_, sample in cb_co_assignments.deep_items():
-
-        has_gt = np.isfinite(sample[:, 0])
-        has_pred = np.isfinite(sample[:, 1])
-        matched = has_gt & has_pred
-        n_gt = has_gt.sum()
-        n_pred = has_pred.sum()
-        n_matched = matched.sum()
-
-        precision.append(np.nan if n_pred == 0 else n_matched / n_pred)
-        recall.append(np.nan if n_gt == 0 else n_matched / n_gt)
-        fdr.append(np.nan if n_pred == 0 else (n_pred - n_matched) / n_pred)
-        if n_matched:
-            matched_distances.append(sample[matched, 5])
-
-    if matched_distances:
-        mean_distance_bp = np.concatenate(matched_distances).mean() * bin_size
-    else:
-        mean_distance_bp = np.nan
-
-    return _nanmean(precision), _nanmean(recall), _nanmean(fdr), mean_distance_bp
-
-
-def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred_score=10):
+def calculate_score_metrics(co_markers, co_preds, ground_truth, max_phred_score=10):
     """
-    Calculates ground-truth benchmarking metrics for each cell barcode.
+    Calculates score metrics for each cell barcode, comparing predictions to ground truth.
 
     Parameters
     ----------
@@ -480,58 +336,33 @@ def calculate_ground_truth_metrics(co_markers, co_preds, ground_truth, max_phred
     Returns
     -------
     pd.DataFrame
-        A DataFrame containing the calculated ground-truth metrics for each cell barcode.
+        A DataFrame containing the calculated score metrics for each cell barcode.
     """
-    co_sample_gt_assignment = co_preds.metadata.get('co_sample_gt_assignment')
-    columns = [
-        'cb', 'gt_n_crossovers', 'gt_detectable_crossovers',
-        'gt_haplotype_mae_score', 'gt_crossover_precision', 'gt_crossover_recall',
-    ]
-    if co_sample_gt_assignment is not None:
-        columns += [
-            'gt_sample_co_precision', 'gt_sample_co_recall',
-            'gt_sample_co_fdr', 'gt_sample_co_mean_distance_bp'
-        ]
-
     score_metrics = []
     for cb, cb_co_preds in co_preds.items():
-        if cb.startswith('doublet'):
-            score_metrics.append([cb] + [np.nan] * (len(columns) - 1))
-            continue
-
         cb_co_markers = co_markers[cb]
-        cb_co_pred_dosage = co_preds.get_haplotype_dosage(cb)
-        cb_co_gt_dosage = ground_truth.get_haplotype_dosage(cb)
-        gt_co_precision, gt_co_recall = gt_crossover_precision_recall(
-            cb_co_pred_dosage,
-            cb_co_gt_dosage,
-        )
-        row = [
-            cb,
-            n_crossovers(cb_co_gt_dosage),
-            gt_detectable_crossovers(cb_co_markers, cb_co_gt_dosage),
-            gt_haplotype_mae_score(
-                cb_co_pred_dosage, cb_co_gt_dosage, max_score=max_phred_score
-            ),
-            gt_co_precision,
-            gt_co_recall,
-        ]
-        if co_sample_gt_assignment is not None:
-            row += co_sample_assignment_metrics(
-                co_sample_gt_assignment[cb],
-                co_preds.bin_size,
-            )
-        score_metrics.append(row)
-
-    return pd.DataFrame(score_metrics, columns=columns)
-
-
-def _ground_truth_from_marker_records(co_markers):
-    ground_truth = PredictionRecords.new_like(co_markers)
-    for cb, chrom_data in co_markers.metadata['ground_truth'].items():
-        for chrom, arr in chrom_data.items():
-            ground_truth[cb, chrom] = np.asarray(arr)
-    return ground_truth
+        if cb.split(':')[0] != 'doublet':
+            cb_co_gt = ground_truth[cb]
+            score_metrics.append([
+                cb,
+                int(n_crossovers(cb_co_gt)),
+                gt_max_detectable_cos(cb_co_markers, cb_co_gt),
+                gt_haplotype_accuracy_score(cb_co_preds, cb_co_gt, max_score=max_phred_score),
+                gt_haplotype_accuracy_score(
+                    cb_co_preds, cb_co_gt, thresholded=True, max_score=max_phred_score
+                ),
+                gt_co_score(cb_co_preds, cb_co_gt),
+            ])
+        else:
+            score_metrics.append([
+                cb, np.nan, np.nan, np.nan, np.nan, np.nan
+            ])
+    score_metrics = pd.DataFrame(
+        score_metrics,
+        columns=['cb', 'gt_n_crossovers', 'gt_detectable_cos',
+                 'gt_accuracy_score', 'gt_thresholded_acc_score', 'gt_co_score']
+    )
+    return score_metrics
 
 
 def _write_metric_tsv(output_tsv_fn, qual_metrics, score_metrics=None, precision=3):
@@ -549,7 +380,7 @@ def run_stats(marker_json_fn, pred_json_fn, output_tsv_fn, *,
               nco_min_prob_change=2.5e-3, output_precision=3):
     """
     Scores the quality of data and predictions for a set of haplotype calls 
-    generated with `predict`. This function computes prediction metrics and, if 
+    generated with `predict`. This function computes quality metrics and, if 
     available, benchmarking metrics using ground truth data, and writes the 
     results to a TSV file.
 
@@ -589,15 +420,12 @@ def run_stats(marker_json_fn, pred_json_fn, output_tsv_fn, *,
     if set(co_preds.barcodes) != set(co_markers.barcodes):
         raise ValueError('Cell barcodes from marker-json-fn and predict-json-fn do not match')
 
-    log.info('Calculating prediction metrics')
-    qual_metrics = calculate_prediction_metrics(co_markers, co_preds)
+    log.info('Calculating quality metrics')
+    qual_metrics = calculate_quality_metrics(co_markers, co_preds)
     if 'ground_truth' in co_markers.metadata:
-        ground_truth = _ground_truth_from_marker_records(co_markers)
-        score_metrics = calculate_ground_truth_metrics(
-            co_markers,
-            co_preds,
-            ground_truth,
-        )
+        ground_truth_haplotypes = ground_truth_from_marker_records(co_markers)
+        log.info('Using ground truth info to calculate benchmarking metrics')
+        score_metrics = calculate_score_metrics(co_markers, co_preds, ground_truth_haplotypes)
     else:
         score_metrics = None
 

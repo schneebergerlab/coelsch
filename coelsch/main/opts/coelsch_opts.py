@@ -6,14 +6,13 @@ from .callbacks import (
     validate_loadcsl_input,
     validate_clean_input,
     validate_pred_input,
-    validate_sim_input,
 )
 
 
 coelsch_opts = OptionRegistry(
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
                  'sim', 'concat', 'clean', 'predict',
-                 'doublet', 'stats', 'plot', 'segdist', 'inspect', 'alaaf']
+                 'doublet', 'stats', 'plot', 'segdist']
 )
 coelsch_opts.register_callback(log_parameters('coelsch'))
 coelsch_opts.register_callback(
@@ -31,8 +30,4 @@ coelsch_opts.register_callback(
 coelsch_opts.register_callback(
     validate_pred_input,
     subcommands=['predict', 'bam2pred', 'csl2pred']
-)
-coelsch_opts.register_callback(
-    validate_sim_input,
-    subcommands=['sim']
 )

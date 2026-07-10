@@ -41,81 +41,63 @@ def argmax_smoothed_haplotype(m, window=40):
     return smoothed.argmax(axis=1)
 
 
-def _softmax(x, axis=-1):
-    x = x - np.max(x, axis=axis, keepdims=True)
-    ex = np.exp(x)
-    return ex / ex.sum(axis=axis, keepdims=True)
-
-
-def approximate_haplotype_patterns(
-    X,
-    component_dosages,
-    window=40,
-    temperature=0.05,
-    floor=0.02,
-):
+def align_foreground_column(X, window=40):
     """
-    Approximate per-bin haplotype dosage patterns from marker counts.
-
-    Marker counts are smoothed along bins, converted to haplotype proportions,
-    and compared to each expected dosage pattern in ``component_dosages``. The
-    returned array contains soft pattern weights with shape
-    ``(total_bins, n_patterns)``. These weights can be used as rough labels for
-    cleaning or as prior/responsibility estimates for downstream model fitting.
+    Reorder marker counts so the dominant (foreground) haplotype is always in column 0.
+    Supports masked arrays (mask is also aligned)
 
     Parameters
     ----------
-    X : iterable of ndarray
-        Marker count arrays with shape ``(bins, haplotypes)``. Masked arrays are
-        supported.
-    component_dosages : ndarray
-        Expected dosage patterns with shape ``(n_patterns, haplotypes)``. Each
-        row must have positive total dosage.
+    X : list of np.ndarray
+        List of marker count arrays, each with shape (bins, 2).
     window : int, optional
-        Smoothing window in bins.
-    temperature : float, optional
-        Softmax temperature used to convert pattern distances to weights.
-    floor : float, optional
-        Uniform weight mixed into each row to prevent exact zero weights.
+        Width of the smoothing window for foreground detection (default is 40).
 
     Returns
     -------
-    ndarray
-        Soft pattern weights with one row per input bin.
+    list of np.ndarray
+        List of arrays with reordered haplotype columns.
     """
-    component_dosages = np.asarray(component_dosages, dtype=float)
-
-    dosage_totals = component_dosages.sum(axis=1, keepdims=True)
-    if np.any(dosage_totals <= 0):
-        raise ValueError("all component dosage vectors must have non-zero dosage")
-
-    dosage_props = component_dosages / dosage_totals
-    pattern_weights = []
-
-    temperature = max(float(temperature), 1e-12)
+    X_reordered = []
 
     for x in X:
-        x = np.ma.asarray(x, dtype=float)
-        smoothed = np.ma.asarray(smooth_counts_sum(x, window), dtype=float)
-        smoothed_data = smoothed.filled(0.0)
+        fg_idx = argmax_smoothed_haplotype(x, window)
+        idx = np.stack([fg_idx, 1 - fg_idx], axis=1)
 
-        row_sum = smoothed_data.sum(axis=1, keepdims=True)
-        zero_rows = row_sum[:, 0] <= 0
+        if isinstance(x, np.ma.MaskedArray):
+            # reorder mask the same way
+            x_reordered = np.take_along_axis(x.data, idx, axis=1)
+            mask_reordered = np.take_along_axis(x.mask, idx, axis=1)
+            X_reordered.append(np.ma.array(x_reordered, mask=mask_reordered))
+        else:
+            x_reordered = np.take_along_axis(x, idx, axis=1)
+            X_reordered.append(x_reordered)
 
-        obs_props = np.divide(
-            smoothed_data,
-            row_sum,
-            out=np.zeros_like(smoothed_data, dtype=float),
-            where=row_sum > 0,
-        )
+    return X_reordered
 
-        dist2 = ((obs_props[:, None, :] - dosage_props[None, :, :]) ** 2).sum(axis=2)
-        p = _softmax(-dist2 / temperature, axis=1)
 
-        if np.any(zero_rows):
-            p[zero_rows] = 1.0 / component_dosages.shape[0]
+def detect_heterozygous_bins(X_ordered, window=40):
+    """
+    Detect heterozygous bins based on smoothed haplotype imbalance.
 
-        p = (1.0 - floor) * p + floor / component_dosages.shape[0]
-        pattern_weights.append(p)
+    Parameters
+    ----------
+    X_ordered : list of np.ndarray
+        List of marker count arrays with shape (bins, 2). They should be ordered
+        so that the dominant haplotype is in column 0.
+    window : int, optional
+        Width of the smoothing window (default is 40).
 
-    return np.concatenate(pattern_weights, axis=0)
+    Returns
+    -------
+    list of np.ndarray
+        List of boolean masks indicating heterozygous bins for each input array.
+    """
+    heterozygous_mask = []
+    for x in X_ordered:
+        smoothed = smooth_counts_sum(x, window)
+        # test the ratio of the fg and bg count sums.
+        # In hom/het bins they should be 2:0 vs 1:1 respectively
+        mask = smoothed[:, 0] < 2 * smoothed[:, 1]
+        heterozygous_mask.append(mask)
+    return heterozygous_mask

@@ -12,12 +12,11 @@ import numpy as np
 import pysam
 
 from .bam import BAMHaplotypeIntervalReader
-from .utils import get_chrom_sizes_bam, chrom_chunks
-from ..genotyping import genotype_from_inv_counts, resolve_inv_counts_to_co_markers
+from .utils import get_ha_samples, get_chrom_sizes_bam, chrom_chunks
+from ..genotype import GenotypeKey, GenotypesSet, genotype_from_inv_counts, resolve_inv_counts_to_co_markers
 from ..utils import genotyping_results_formatter
 
 from coelsch.records import MarkerRecords, NestedData
-from coelsch.experiment.genotypes import GenotypeKey
 from coelsch.clean.filter import filter_low_coverage_barcodes, filter_genotyping_score
 from coelsch.defaults import DEFAULT_RANDOM_SEED, DEFAULT_EXCLUDE_CONTIGS
 
@@ -34,8 +33,8 @@ def _get_interval_co_markers(bam_fn, chrom, bin_start, bin_end, **kwargs):
     return chrom_inv_counts
 
 
-def bam_to_co_markers(bam_fn, experimental_design, processes=1,
-                      run_genotype=False, genotype_kwargs=None, **kwargs):
+def bam_to_co_markers(bam_fn, processes=1, seq_type=None, ploidy_type='haploid',
+                      run_genotype=False, recombinant_mode=False, genotype_kwargs=None, **kwargs):
     """
     Read from a BAM file, identify reads aligning to each haplotype for each cell barcode,
     and summarize the data into a `MarkerRecords` object.
@@ -44,12 +43,17 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
     ----------
     bam_fn : str
         The BAM file path.
-    experimental_design : coelsch.experiment.ExperimentalDesign
-        The experimental design/parameters
     processes : int, optional
         The number of parallel processes to use (default is 1).
+    seq_type : str, optional
+        The type of sequencing data (e.g., "10x_atac", "10x_rna", "bd_rna", "takara", "wgs").
+    ploidy_type : str or None
+        A string describing the ploidy type and crossing strategy of the data
+        (e.g. "haploid", "diploid_bc1", "diploid_f2").
     run_genotype : bool, optional
         If True, perform genotyping of parental accessions based on interval counts (default is False).
+    recombinant_mode : bool, optional
+        If True, parental genotypes are themselves recombinants provided in genotype_kwargs (default is False).
     genotype_kwargs : dict, optional
         Additional arguments passed to the genotyping function (default is None).
     kwargs : dict
@@ -62,7 +66,6 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
     """
     chrom_sizes = get_chrom_sizes_bam(bam_fn, exclude_contigs=kwargs.get('exclude_contigs', None))
     bin_size = kwargs.get('bin_size')
-    kwargs['allowed_haplotypes'] = experimental_design.founder_haplotypes
 
     log.debug(f'Starting job pool to process bam with {processes} processes')
     with Parallel(n_jobs=processes, backend='loky') as pool:
@@ -76,7 +79,8 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
     co_markers = MarkerRecords(
         chrom_sizes,
         bin_size,
-        experiment_params=experimental_design.experiment_params
+        seq_type=seq_type,
+        ploidy_type=ploidy_type,
     )
 
     if genotype_kwargs is None:
@@ -85,11 +89,15 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
     if run_genotype:       
         if kwargs.get('hap_tag_type', 'star_diploid') != "multi_haplotype":
             raise ValueError('must use "multi_haplotype" type hap tag to perform genotyping')
+        if recombinant_mode and genotype_kwargs.get('crossing_combinations', None) is not None:
+            raise ValueError('Cannot provide crossing combinations when recombinant genotyping mode is switched on')
 
+        all_haplotypes = get_ha_samples(bam_fn)
         (genotypes, genotype_probs,
          genotype_nmarkers, genotype_error_rates,
          inv_counts) = genotype_from_inv_counts(
-            inv_counts, experimental_design, **genotype_kwargs
+            inv_counts, recombinant_mode=recombinant_mode,
+            all_haplotypes=all_haplotypes, **genotype_kwargs
         )
         if log.isEnabledFor(logging.DEBUG):
             log.debug(genotyping_results_formatter(genotypes))
@@ -102,12 +110,19 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
 
     elif kwargs.get('hap_tag_type', 'star_diploid') == "multi_haplotype":
         # genotyping is switched off but we can infer the genotype of barcodes from the haplotype tags
-        if len(experimental_design.genotypes) != 1:
-            raise ValueError(
-                'If genotyping is switched off, only one crossing_combination or '
-                'haplotype combination is allowed'
-            )
-        geno = experimental_design.genotypes[0]
+        if genotype_kwargs.get('crossing_combinations', None):
+            if len(genotype_kwargs['crossing_combinations']) > 1:
+                raise ValueError('When genotyping is switched off, only one crossing_combination can be provided')
+            geno = GenotypeKey(list(genotype_kwargs['crossing_combinations'])[0])
+        else:
+            all_haplotypes = get_ha_samples(bam_fn)
+            if len(all_haplotypes) == 2:
+                geno = GenotypeKey(all_haplotypes)
+            else:
+                raise ValueError(
+                    'If haplotyping is switched off and crossing_combinations are not provided, the bam file '
+                    'can only contain two haplotypes'
+                )
 
         # create a dummy genotypes object where all barcodes have the same genotype
         genotypes = NestedData(
@@ -116,7 +131,7 @@ def bam_to_co_markers(bam_fn, experimental_design, processes=1,
             data={cb: geno for ic in inv_counts for cb in ic.counts},
         )
         # inv_counts are still in haplotype form, need to be resolved using dummy genotype
-        inv_counts = resolve_inv_counts_to_co_markers(inv_counts, genotypes, experimental_design)
+        inv_counts = resolve_inv_counts_to_co_markers(inv_counts, genotypes, GenotypesSet([geno,]))
         co_markers.add_metadata(
             genotypes=NestedData(
                 levels=('cb',),

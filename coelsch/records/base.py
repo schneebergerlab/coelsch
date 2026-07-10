@@ -356,20 +356,12 @@ class NestedData:
         for key in self.keys():
             yield key, self[key]
 
-    def deep_items(self, max_depth=None):
+    def deep_items(self):
         n = self.nlevels
 
-        if max_depth is None:
-            max_depth = n
-
-        if max_depth < 0:
-            raise ValueError("max_depth must be >= 0")
-
-        max_depth = min(max_depth, n)
-
         def _recursive_items(obj, depth, key_path):
-            if depth == max_depth:
-                yield *key_path, obj
+            if depth == n:
+                yield key_path, obj
             else:
                 for key, val in obj.items():
                     yield from _recursive_items(val, depth + 1, key_path + (key,))
@@ -580,14 +572,14 @@ class NestedData:
             raise NotImplementedError(f'json serialisation not implemented for type: {type(obj)}')
         return json_serialisable
 
-    def to_json(self, precision=3):
+    def to_json(self, precision=5):
         """
         Serializes the nested data dictionary to a JSON-compatible format.
 
         Parameters
         ----------
         precision : int, optional
-            The number of decimal places to use when serializing floating-point values (default is 3).
+            The number of decimal places to use when serializing floating-point values (default is 5).
 
         Returns
         -------
@@ -765,14 +757,14 @@ class NestedDataArray(NestedData):
 
         return _deserialise(obj, 0)
 
-    def to_json(self, precision=3, encode_method='full'):
+    def to_json(self, precision=5, encode_method='full'):
         """
         Serializes the nested data dictionary to a JSON-compatible format.
 
         Parameters
         ----------
         precision : int, optional
-            The number of decimal places to use when serializing floating-point values (default is 3).
+            The number of decimal places to use when serializing floating-point values (default is 5).
         encode_method: None
             Whether to encode the full values or a sparse encoding
 

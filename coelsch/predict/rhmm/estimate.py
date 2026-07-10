@@ -1,516 +1,205 @@
 import logging
-import numpy as np
-import torch
 
+import numpy as np
+
+import torch
 from pomegranate import distributions as pmd
 from pomegranate.gmm import GeneralMixtureModel
 from pomegranate._utils import _update_parameter
 
-from coelsch.signal import approximate_haplotype_patterns
+
+from coelsch.signal import align_foreground_column, detect_heterozygous_bins
 from .dists import NegativeBinomial, ZeroInflated
-from . import utils
-
-log = logging.getLogger('coelsch')
-
-
-def _require_n_haplotypes(X, expected, strategy):
-    if len(X) == 0:
-        raise ValueError("X is empty")
-    observed = X[0].shape[1]
-    if observed != expected:
-        raise ValueError(
-            f"{strategy} expects {expected} haplotype channels, "
-            f"but X has {observed}"
-        )
+from .utils import numpy_to_torch
 
 
 def _estimate_alpha(m, v):
-    m = np.asarray(m, dtype=float)
-    v = np.asarray(v, dtype=float)
-
-    alpha = np.maximum((v - m) / np.maximum(m**2, 1e-12), 1e-6)
-    alpha = np.where(m <= 0, 0.1, alpha)
-
-    return float(alpha) if alpha.ndim == 0 else alpha
-
-
-def _shrink_to_shared(x, strength=1.0, fallback=1.0):
-    x = np.asarray(x, dtype=float)
-    finite = np.isfinite(x)
-
-    if finite.any():
-        shared = np.nanmean(x)
-    else:
-        shared = fallback
-
-    x = np.where(finite, x, shared)
-    return shared + strength * (x - shared)
-
-
-def _broadcast_param(x, n_haplotypes):
-    if x is None:
-        return None
-
-    x = np.asarray(x, dtype=float)
-
-    if x.ndim == 0:
-        return np.full(n_haplotypes, float(x), dtype=float)
-
-    if x.shape != (n_haplotypes,):
-        raise ValueError(
-            f"parameter has shape {x.shape}, expected {(n_haplotypes,)}"
-        )
-
-    return x
-
-
-def _calculate_model_params(
-    component_dosages,
-    fg_mean,
-    bg_mean,
-    fg_alpha=None,
-    bg_alpha=None,
-    fg_empty_fraction=None,
-    bg_empty_fraction=None,
-):
-    component_dosages = np.asarray(component_dosages, dtype=float)
-
-    if component_dosages.ndim == 1:
-        n_haplotypes = component_dosages.shape[0]
-    elif component_dosages.ndim == 2:
-        n_haplotypes = component_dosages.shape[1]
-    else:
-        raise ValueError("component_dosages must be 1D or 2D")
-
-    fg_mean = _broadcast_param(fg_mean, n_haplotypes)
-    bg_mean = _broadcast_param(bg_mean, n_haplotypes)
-
-    means = np.where(
-        component_dosages > 0,
-        component_dosages * fg_mean,
-        bg_mean,
-    )
-
-    alphas = None
-    if fg_alpha is not None and bg_alpha is not None:
-        fg_alpha = _broadcast_param(fg_alpha, n_haplotypes)
-        bg_alpha = _broadcast_param(bg_alpha, n_haplotypes)
-
-        alphas = np.where(
-            component_dosages > 0,
-            fg_alpha,
-            bg_alpha,
-        )
-
-    empty_fractions = None
-    if fg_empty_fraction is not None and bg_empty_fraction is not None:
-        fg_empty_fraction = _broadcast_param(fg_empty_fraction, n_haplotypes)
-        bg_empty_fraction = _broadcast_param(bg_empty_fraction, n_haplotypes)
-
-        empty_fractions = np.where(
-            component_dosages > 0,
-            fg_empty_fraction,
-            bg_empty_fraction,
-        )
-
-    return means, alphas, empty_fractions
-
-
-def _format_params(params, dist_type):
-    fg_mean, bg_mean, fg_alpha, bg_alpha, fg_empty_fraction, bg_empty_fraction = params
-
-    if dist_type == "poisson":
-        return (
-            {
-                "lambda": np.asarray(fg_mean, dtype=float),
-                "empty_fraction": np.asarray(fg_empty_fraction, dtype=float),
-            },
-            {
-                "lambda": np.asarray(bg_mean, dtype=float),
-                "empty_fraction": np.asarray(bg_empty_fraction, dtype=float),
-            },
-        )
-
-    if dist_type == "nb":
-        return (
-            {
-                "mean": np.asarray(fg_mean, dtype=float),
-                "alpha": np.asarray(fg_alpha, dtype=float),
-                "empty_fraction": np.asarray(fg_empty_fraction, dtype=float),
-            },
-            {
-                "mean": np.asarray(bg_mean, dtype=float),
-                "alpha": np.asarray(bg_alpha, dtype=float),
-                "empty_fraction": np.asarray(bg_empty_fraction, dtype=float),
-            },
-        )
-
-    raise ValueError(f"Unknown dist_type: {dist_type}")
-
-
-def _build_zid(
-    dosages,
-    fg_mean,
-    bg_mean,
-    fg_alpha=None,
-    bg_alpha=None,
-    dist_type="poisson",
-):
-    means, alphas, _ = _calculate_model_params(
-        dosages,
-        fg_mean,
-        bg_mean,
-        fg_alpha,
-        bg_alpha,
-    )
-
-    if dist_type == "poisson":
-        dist = pmd.Poisson(means)
-    elif dist_type == "nb":
-        dist = NegativeBinomial(means=means, alphas=alphas)
-    else:
-        raise NotImplementedError()
-
-    return ZeroInflated(dist)
-
-
-def _build_gmm(
-    component_dosages,
-    *,
-    fg_mean,
-    bg_mean,
-    label_priors=None,
-    fg_alpha=None,
-    bg_alpha=None,
-    dist_type="poisson",
-):
-    dists = []
-
-    for dosage in component_dosages:
-        dists.append(
-            _build_zid(
-                dosage,
-                fg_mean,
-                bg_mean,
-                fg_alpha,
-                bg_alpha,
-                dist_type,
-            )
-        )
-
-    return GeneralMixtureModel(dists, priors=label_priors)
-
-
-def _estimate_init_params_soft(
-    X,
-    label_priors,
-    component_dosages,
-    pseudocount=1.0,
-    channel_strength=1.0,
-):
-    data, valid = utils.data_and_mask(X)
-
-    label_priors = np.asarray(label_priors, dtype=float)
-    component_dosages = np.asarray(component_dosages, dtype=float)
-
-    n_bins, n_haplotypes = data.shape
-
-    if label_priors.shape[0] != n_bins:
-        raise ValueError("label_priors and X have different numbers of rows")
-
-    if component_dosages.shape[1] != n_haplotypes:
-        raise ValueError("component_dosages and X have different channel counts")
-
-    fg_mean = np.full(n_haplotypes, np.nan, dtype=float)
-    bg_mean = np.full(n_haplotypes, np.nan, dtype=float)
-    fg_alpha = np.full(n_haplotypes, np.nan, dtype=float)
-    bg_alpha = np.full(n_haplotypes, np.nan, dtype=float)
-
-    for h in range(n_haplotypes):
-        fg_wsum = 0.0
-        fg_sum = 0.0
-        fg_sumsq = 0.0
-
-        bg_wsum = 0.0
-        bg_sum = 0.0
-        bg_sumsq = 0.0
-
-        for comp, dosage in enumerate(component_dosages[:, h]):
-            w = label_priors[:, comp] * valid[:, h]
-
-            if dosage > 0:
-                values = data[:, h] / dosage
-                fg_wsum += w.sum()
-                fg_sum += np.sum(w * values)
-                fg_sumsq += np.sum(w * values**2)
-            else:
-                values = data[:, h]
-                bg_wsum += w.sum()
-                bg_sum += np.sum(w * values)
-                bg_sumsq += np.sum(w * values**2)
-
-        if fg_wsum > 0:
-            mean = (fg_sum + pseudocount) / (fg_wsum + pseudocount)
-            raw_mean = fg_sum / fg_wsum
-            var = max(fg_sumsq / fg_wsum - raw_mean**2, 0.0)
-
-            fg_mean[h] = mean
-            fg_alpha[h] = _estimate_alpha(mean, var)
-
-        if bg_wsum > 0:
-            mean = (bg_sum + pseudocount) / (bg_wsum + pseudocount)
-            raw_mean = bg_sum / bg_wsum
-            var = max(bg_sumsq / bg_wsum - raw_mean**2, 0.0)
-
-            bg_mean[h] = mean
-            bg_alpha[h] = _estimate_alpha(mean, var)
-
-    fg_mean = _shrink_to_shared(fg_mean, channel_strength, fallback=1.0)
-    bg_mean = _shrink_to_shared(bg_mean, channel_strength, fallback=0.1)
-    fg_alpha = _shrink_to_shared(fg_alpha, channel_strength, fallback=0.1)
-    bg_alpha = _shrink_to_shared(bg_alpha, channel_strength, fallback=0.1)
-
-    return fg_mean, bg_mean, fg_alpha, bg_alpha
-
-
-def _constrain_params(
-    model,
-    component_dosages,
-    dist_type,
-    update=True,
-    channel_strength=1.0,
-):
-    mean_attr = "lambdas" if dist_type == "poisson" else "means"
-
-    model_dists = model.distributions
-    component_dosages = np.asarray(component_dosages, dtype=float)
-
-    n_haplotypes = component_dosages.shape[1]
-
-    fg_means = [[] for _ in range(n_haplotypes)]
-    bg_means = [[] for _ in range(n_haplotypes)]
-    fg_alphas = [[] for _ in range(n_haplotypes)]
-    bg_alphas = [[] for _ in range(n_haplotypes)]
-    fg_priors = [[] for _ in range(n_haplotypes)]
-    bg_priors = [[] for _ in range(n_haplotypes)]
-
-    for dist, dosage in zip(model_dists, component_dosages):
-        means = utils.torch_to_numpy(getattr(dist.distribution, mean_attr))
-
-        if dist_type == "poisson":
-            alphas = np.full_like(means, fill_value=np.nan, dtype=float)
-        elif dist_type == "nb":
-            alphas = utils.torch_to_numpy(getattr(dist.distribution, "alphas"))
-        else:
-            raise NotImplementedError()
-
-        priors = utils.torch_to_numpy(getattr(dist, "priors"))
-
-        for h, (d, m, a, p) in enumerate(zip(dosage, means, alphas, priors)):
-            if d > 0:
-                fg_means[h].append(m / d)
-                fg_alphas[h].append(a)
-                fg_priors[h].append(p)
-            else:
-                bg_means[h].append(m)
-                bg_alphas[h].append(a)
-                bg_priors[h].append(p)
-
-    fg_mean = np.array([
-        np.mean(values) if values else np.nan
-        for values in fg_means
-    ])
-
-    bg_mean = np.array([
-        np.mean(values) if values else np.nan
-        for values in bg_means
-    ])
-
-    fg_mean = _shrink_to_shared(fg_mean, channel_strength, fallback=1.0)
-    bg_mean = _shrink_to_shared(bg_mean, channel_strength, fallback=0.1)
-
-    if dist_type == "nb":
-        fg_alpha = np.array([
-            np.nanmean(values) if values else np.nan
-            for values in fg_alphas
-        ])
-
-        bg_alpha = np.array([
-            np.nanmean(values) if values else np.nan
-            for values in bg_alphas
-        ])
-
-        fg_alpha = _shrink_to_shared(fg_alpha, channel_strength, fallback=0.1)
-        bg_alpha = _shrink_to_shared(bg_alpha, channel_strength, fallback=0.1)
-    else:
-        fg_alpha, bg_alpha = None, None
-
-    fg_prior = np.array([
-        np.mean(values) if values else np.nan
-        for values in fg_priors
-    ])
-
-    bg_prior = np.array([
-        np.mean(values) if values else np.nan
-        for values in bg_priors
-    ])
-
-    fg_prior = _shrink_to_shared(fg_prior, channel_strength, fallback=0.01)
-    bg_prior = _shrink_to_shared(bg_prior, channel_strength, fallback=0.01)
-
-    fg_prior = np.clip(fg_prior, 1e-6, 1.0 - 1e-6)
-    bg_prior = np.clip(bg_prior, 1e-6, 1.0 - 1e-6)
-
-    if update:
-        means, alphas, priors = _calculate_model_params(
-            component_dosages,
-            fg_mean,
-            bg_mean,
-            fg_alpha,
-            bg_alpha,
-            fg_prior,
-            bg_prior,
-        )
-
-        if alphas is None:
-            alphas = [None] * len(model_dists)
-
-        if priors is None:
-            priors = [None] * len(model_dists)
-
-        for dist_mean, dist_alpha, dist_prior, dist in zip(
-            means,
-            alphas,
-            priors,
-            model_dists,
-        ):
-            _update_parameter(
-                getattr(dist.distribution, mean_attr),
-                dist_mean,
-            )
-
-            if dist_type == "nb":
-                _update_parameter(
-                    getattr(dist.distribution, "alphas"),
-                    dist_alpha,
-                )
-
-            if dist_prior is not None:
-                _update_parameter(
-                    getattr(dist, "priors"),
-                    dist_prior,
-                )
-
-    return fg_mean, bg_mean, fg_alpha, bg_alpha, fg_prior, bg_prior
+    if m <= 0: 
+        return 0.1  # fallback
+    return max((v - m) / (m**2), 1e-6)
 
 
 @torch.no_grad()
-def _fit_constrained_model(
-    model,
-    X,
-    component_dosages,
-    priors=None,
-    dist_type="poisson",
-    max_iter=1000,
-    tol=0.1,
-    channel_strength=1.0,
-):
-    X = utils.numpy_to_torch(X)
+def estimate_haploid_emissions(X, window=40, dist_type="poisson"):
+    """
+    Estimate emission parameters for haploid data.
+
+    Returns
+    -------
+    tuple(dict, dict, float)
+        fg_params, bg_params, empty_fraction
+    """
+    X_ordered = align_foreground_column(X, window)
+    if any(isinstance(x, np.ma.MaskedArray) for x in X_ordered):
+        X_flattened = np.ma.concatenate(X_ordered)
+    else:
+        X_flattened = np.concatenate(X_ordered)
+
+    init_fg_mean, init_bg_mean = np.mean(X_flattened, axis=0)
+
+    if dist_type == "poisson":
+        zid = ZeroInflated(pmd.Poisson([init_fg_mean, init_bg_mean])).fit(numpy_to_torch(X_flattened))
+        fg_lambda, bg_lambda = zid.distribution.lambdas.numpy()
+        fg_params = {"lambda": float(fg_lambda)}
+        bg_params = {"lambda": float(bg_lambda)}
+
+    elif dist_type == "nb":
+        init_fg_var, init_bg_var = np.var(X_flattened, axis=0, ddof=1)
+        init_fg_alpha = _estimate_alpha(init_fg_mean, init_fg_var)
+        init_bg_alpha = _estimate_alpha(init_bg_mean, init_bg_var)
+        zid = ZeroInflated(
+            NegativeBinomial(means=[init_fg_mean, init_bg_mean],
+                             alphas=[init_fg_alpha, init_bg_alpha], frozen=False)
+        ).fit(numpy_to_torch(X_flattened))
+        fg_mean, bg_mean = zid.distribution.means.numpy()
+        fg_alpha, bg_alpha = zid.distribution.alphas.numpy()
+        fg_params = {"mean": float(fg_mean), "alpha": float(fg_alpha)}
+        bg_params = {"mean": float(bg_mean), "alpha": float(bg_alpha)}
+
+    else:
+        raise ValueError(f"Unknown dist_type: {dist_type}")
+
+    fg_params['empty_fraction'] = float(zid.priors.numpy()[0])
+    bg_params['empty_fraction'] = float(zid.priors.numpy()[1])
+    return fg_params, bg_params
+
+
+@torch.no_grad()
+def _fit_constrainted_diploid(X, init_fg_mean, init_bg_mean, *, priors=None,
+                              dist_type='poisson', init_fg_alpha=None, init_bg_alpha=None,
+                              max_iter=1000, tol=0.1):
+
+    if dist_type == 'poisson':
+        gmm = GeneralMixtureModel([
+            ZeroInflated(pmd.Poisson([init_fg_mean * 2, init_bg_mean])),
+            ZeroInflated(pmd.Poisson([init_fg_mean, init_fg_mean])),
+        ])
+        mean_attr = 'lambdas'
+    else:
+        gmm = GeneralMixtureModel([
+            ZeroInflated(NegativeBinomial([init_fg_mean * 2, init_bg_mean], [init_fg_alpha, init_bg_alpha])),
+            ZeroInflated(NegativeBinomial([init_fg_mean, init_fg_mean], [init_fg_alpha, init_fg_alpha])),
+        ])
+        mean_attr = 'means'
+
     logp = None
-
     for i in range(max_iter):
-
         last_logp = logp
-        logp = model.summarize(X, priors=priors)
+        logp = gmm.summarize(X, priors=priors)
+
         if i > 0:
             improvement = logp - last_logp
             if improvement < tol:
                 break
 
-        model.from_summaries()
+        gmm.from_summaries()
 
-        _constrain_params(
-            model,
-            component_dosages,
-            dist_type,
-            update=True,
-            channel_strength=channel_strength,
+        hom_means = getattr(gmm.distributions[0].distribution, mean_attr)
+        het_means = getattr(gmm.distributions[1].distribution, mean_attr)
+
+        # average across the means to get a single foreground result
+        fg_mean = float(np.mean([hom_means.numpy()[0] / 2, *het_means.numpy()]))
+        bg_mean = float(hom_means.numpy()[1])
+        _update_parameter(hom_means, [fg_mean * 2, bg_mean])
+        _update_parameter(het_means, [fg_mean, fg_mean])
+
+        if dist_type == 'nb':
+            hom_alphas = gmm.distributions[0].distribution.alphas
+            het_alphas = gmm.distributions[1].distribution.alphas
+            fg_alpha = float(np.mean([hom_alphas.detach().numpy()[0], *het_alphas.detach().numpy()]))
+            bg_alpha = float(hom_alphas.detach().numpy()[1])
+            _update_parameter(hom_alphas, [fg_alpha, bg_alpha])
+            _update_parameter(het_alphas, [fg_alpha, fg_alpha])
+
+        # enforce equivalent zero inflation across distributions
+        hom_empty = gmm.distributions[0].priors
+        het_empty = gmm.distributions[1].priors
+        fg_empty = float(np.mean([hom_empty.numpy()[0], *het_empty.numpy()]))
+        bg_empty = float(hom_empty.numpy()[1])
+        _update_parameter(hom_empty, [fg_empty, bg_empty])
+        _update_parameter(het_empty, [fg_empty, fg_empty])
+
+    gmm._reset_cache()
+    if dist_type == 'poisson':
+        return fg_mean, bg_mean, fg_empty, bg_empty
+    return fg_mean, bg_mean, fg_alpha, bg_alpha, fg_empty, bg_empty
+
+
+@torch.no_grad()
+def estimate_diploid_emissions_ordered(X_ordered, window=40, dist_type="poisson"):
+    """
+    Estimate emission parameters for diploid data with known foreground column ordering.
+
+    Parameters
+    ----------
+    X_ordered : list of np.ndarray
+        List of marker count arrays with shape (bins, 2), foreground must be column 0.
+    window : int, optional
+        Width of the smoothing window (default is 40).
+    dist_type : str, optional
+        Either "poisson" or "nb".
+
+    Returns
+    -------
+    tuple(dict, dict, float)
+        fg_params, bg_params, empty_fraction
+    """
+    mask = detect_heterozygous_bins(X_ordered, window)
+    if any(isinstance(x, np.ma.MaskedArray) for x in X_ordered):
+        X_flattened = np.ma.concatenate(X_ordered)
+    else:
+        X_flattened = np.concatenate(X_ordered)
+    mask = np.concatenate(mask)
+
+    init_fg_mean, init_bg_mean = X_flattened[mask, 1].mean(), X_flattened[~mask, 1].mean()
+    priors = np.stack([1 - mask.astype(float), mask.astype(float)], axis=-1)
+
+    if dist_type == "poisson":
+
+        fg_mean, bg_mean, fg_empty, bg_empty = _fit_constrainted_diploid(
+            numpy_to_torch(X_flattened), init_fg_mean, init_bg_mean, priors=priors,
         )
 
-    model._reset_cache()
+        fg_params = {'lambda': float(fg_mean), 'empty_fraction': fg_empty}
+        bg_params = {'lambda': float(bg_mean), 'empty_fraction': bg_empty}
 
-    return _constrain_params(
-        model,
-        component_dosages,
-        dist_type,
-        update=False,
-        channel_strength=channel_strength,
-    )
+    elif dist_type == "nb":
+        init_fg_var, init_bg_var = X_flattened[mask, 1].var(ddof=1), X_flattened[~mask, 1].var(ddof=1)
+        init_fg_alpha = _estimate_alpha(init_fg_mean, init_fg_var)
+        init_bg_alpha = _estimate_alpha(init_bg_mean, init_bg_var)
 
-
-def _expected_component_dosages(X, experiment_params):
-    component_dosages = np.asarray(
-        experiment_params.haplotype_state_dosage_patterns,
-        dtype=float,
-    )
-    _require_n_haplotypes(
-        X,
-        component_dosages.shape[1],
-        experiment_params.crossing_strategy,
-    )
-    return component_dosages
-
-
-def estimate_emissions(
-    X,
-    experiment_params,
-    window=40,
-    dist_type="poisson",
-    prior_temperature=0.05,
-    prior_floor=0.02,
-    channel_strength=0.75,
-    max_iter=1000,
-    tol=0.1,
-):
-    component_dosages = _expected_component_dosages(X, experiment_params)
-    X_flattened = utils.concat_arrays(X)
-
-    label_priors = approximate_haplotype_patterns(
-        X,
-        component_dosages,
-        window=window,
-        temperature=prior_temperature,
-        floor=prior_floor,
-    )
-
-    init_fg_mean, init_bg_mean, init_fg_alpha, init_bg_alpha = (
-        _estimate_init_params_soft(
-            X_flattened,
-            label_priors,
-            component_dosages,
-            channel_strength=channel_strength,
+        fg_mean, bg_mean, fg_alpha, bg_alpha, fg_empty, bg_empty = _fit_constrainted_diploid(
+            numpy_to_torch(X_flattened), init_fg_mean, init_bg_mean, priors=priors,
+            dist_type='nb', init_fg_alpha=init_fg_alpha, init_bg_alpha=init_bg_alpha
         )
-    )
 
-    gmm = _build_gmm(
-        component_dosages,
-        fg_mean=init_fg_mean,
-        bg_mean=init_bg_mean,
-        label_priors=label_priors.mean(axis=0),
-        fg_alpha=init_fg_alpha,
-        bg_alpha=init_bg_alpha,
-        dist_type=dist_type,
-    )
+        fg_params = {"mean": float(fg_mean), "alpha": float(fg_alpha), "empty_fraction": fg_empty}
+        bg_params = {"mean": float(bg_mean), "alpha": float(bg_alpha), "empty_fraction": bg_empty}
 
-    params = _fit_constrained_model(
-        gmm,
-        X_flattened,
-        component_dosages,
-        priors=label_priors,
-        dist_type=dist_type,
-        max_iter=max_iter,
-        tol=tol,
-        channel_strength=channel_strength,
-    )
+    else:
+        raise ValueError(f"Unknown dist_type: {dist_type}")
 
-    return _format_params(params, dist_type)
+    return fg_params, bg_params
+
+
+
+def estimate_diploid_emissions_f2(X, window=40, dist_type="poisson"):
+    """
+    Estimate Poisson parameters for diploid F2 data by reordering and calling the ordered estimator.
+
+    Parameters
+    ----------
+    X : list of np.ndarray
+        List of marker count arrays with shape (bins, 2).
+    window : int, optional
+        Width of the smoothing window (default is 40).
+    dist_type : str, optional
+        Either "poisson" or "nb".
+
+    Returns
+    -------
+    tuple(dict, dict, float)
+        fg_params, bg_params, empty_fraction
+    """
+    X_ordered = align_foreground_column(X, window)
+    return estimate_diploid_emissions_ordered(X_ordered, window, dist_type=dist_type)

@@ -1,3 +1,2 @@
 from .model import RigidHMM
 from .train import train_rhmm
-from .independent import IndependentMeiosesHMM

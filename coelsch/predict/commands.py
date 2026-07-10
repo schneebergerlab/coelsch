@@ -4,11 +4,11 @@ import logging
 import numpy as np
 import torch
 
-from .rhmm import train_rhmm, RigidHMM, IndependentMeiosesHMM
+from .rhmm import train_rhmm, RigidHMM
 from .crossovers import detect_crossovers
 from .doublet import detect_doublets
 
-from coelsch.utils import load_json
+from coelsch.utils import load_json, validate_ploidy
 from coelsch import stats
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 
@@ -20,10 +20,10 @@ DEFAULT_DEVICE = torch.device('cpu')
 
 def run_predict(marker_json_fn, output_json_fn, *,
                 co_markers=None,
-                cb_whitelist_fn=None, bin_size=25_000,
+                cb_whitelist_fn=None, bin_size=25_000, ploidy_type=None,
                 segment_size=1_000_000, terminal_segment_size=50_000,
                 cm_per_mb=4.5, interference_half_life=100_000, distribution_type='poisson',
-                independent_meioses='auto', sample_paths=True, n_samples=10,
+                sample_paths=True, n_samples=10,
                 predict_doublets=True, n_doublets=0.25, k_neighbours=0.25,
                 generate_stats=True, write_bed=True, nco_min_prob_change=2.5e-3,
                 output_precision=3, processes=1,
@@ -44,6 +44,11 @@ def run_predict(marker_json_fn, output_json_fn, *,
         Path to barcode whitelist file.
     bin_size : int, optional
         Genomic bin size (default: 25,000).
+    ploidy_type : str, optional
+        Ploidy type of data used to infer type of model to use. Options are
+        "haploid" with model states [0, 1], "diploid_bc1" with states [00, 01],
+        or "diploid_f2" with states [00, 01, 11]. Default is to infer from data
+        if possible, else "haploid"
     segment_size : int, optional
         Size of internal segments for modeling (default: 1,000,000).
     terminal_segment_size : int, optional
@@ -90,22 +95,16 @@ def run_predict(marker_json_fn, output_json_fn, *,
     """
     if co_markers is None:
         co_markers = load_json(marker_json_fn, cb_whitelist_fn, bin_size)
-
-    if predict_doublets and not co_markers.experiment_params.supports_doublet_detection:
-        log.info(
-            'Skipping doublet prediction for sample_unit=%r',
-            co_markers.experiment_params.sample_unit,
-        )
-        predict_doublets = False
+    ploidy_type = validate_ploidy(co_markers, ploidy_type)
 
     rhmm = train_rhmm(
         co_markers,
+        model_type=ploidy_type,
         cm_per_mb=cm_per_mb,
         segment_size=segment_size,
         terminal_segment_size=terminal_segment_size,
         interference_half_life=interference_half_life,
         dist_type=distribution_type,
-        independent_meioses=independent_meioses,
         device=device,
     )
     co_preds = detect_crossovers(
@@ -133,7 +132,7 @@ def run_predict(marker_json_fn, output_json_fn, *,
         co_preds.write_json(output_json_fn, output_precision)
         if write_bed:
             output_bed_fn = f'{os.path.splitext(output_json_fn)[0]}.bed'
-            co_preds.write_bed(output_bed_fn)
+            co_preds.write_bed(output_bed_fn, precision=2)
     return co_preds
 
 
@@ -184,16 +183,7 @@ def run_doublet(marker_json_fn, pred_json_fn, output_json_fn, *,
     if set(co_preds.barcodes) != set(co_markers.barcodes):
         raise ValueError('Cell barcodes from marker-json-fn and predict-json-fn do not match')
 
-    if not co_preds.experiment_params.supports_doublet_detection:
-        raise ValueError(
-            "Doublet prediction only supports sample_unit='single_cell'"
-        )
-
-    rhmm_params = co_preds.metadata['rhmm_params']
-    if rhmm_params.get('is_independent_meioses'):
-        rhmm = IndependentMeiosesHMM.from_params(rhmm_params, device=device)
-    else:
-        rhmm = RigidHMM.from_params(rhmm_params, device=device)
+    rhmm = RigidHMM.from_params(co_preds.metadata['rhmm_params'], device=device)
 
     co_preds = detect_doublets(
         co_markers, co_preds, rhmm, n_doublets=n_doublets,

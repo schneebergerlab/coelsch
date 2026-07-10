@@ -12,90 +12,40 @@ log = logging.getLogger('coelsch')
 LOD = 2 * np.log(10)
 
 
-def _chrom_haplotype_probabilities(co_preds, chrom):
-    arr = co_preds[:, chrom].stack_values()
-    if arr.ndim == 2:
-        return np.stack([co_preds.experiment_params.ploidy - arr, arr], axis=2)
-    return arr
-
-
-def _expected_contingency(expected_probs, order):
-    exp = expected_probs
-    for _ in range(order - 1):
-        exp = np.multiply.outer(exp, expected_probs)
-    if np.any(exp <= 0):
-        raise ValueError('Expected haplotype probabilities must be greater than zero')
-    return exp
-
-
-def _marginal_expected_contingency(observed):
-    total = observed.sum()
-    marginals = []
-    for axis in range(observed.ndim):
-        other_axes = tuple(i for i in range(observed.ndim) if i != axis)
-        marginals.append(observed.sum(axis=other_axes) / total)
-
-    exp = marginals[0]
-    for marginal in marginals[1:]:
-        exp = np.multiply.outer(exp, marginal)
-    return exp
-
-
-def _soft_contingency(tables):
-    if len(tables) > 25:
-        raise ValueError('Soft contingency calculation supports at most 25 loci')
-    cell_axis = 'n'
-    hap_axes = 'abcdefghijklmnopqrstuvwxyz'[:len(tables)]
-    expr = ','.join(f'{cell_axis}{axis}' for axis in hap_axes)
-    expr = f'{expr}->{hap_axes}'
-    return np.einsum(expr, *tables)
-
-
-def _g_test_lod(observed, expected_probs):
-    expected = expected_probs * observed.sum()
-    mask = observed > 0
-    return np.sum(observed[mask] * np.log10(observed[mask] / expected[mask]))
-
-
-def _independence_degrees_of_freedom(shape):
-    return int(np.prod(shape) - sum(shape) + len(shape) - 1)
-
-
-def segregation_distortion_chroms(chrom_haps, order, bin_size, expected_probs):
+def segregation_distortion_chroms(chrom_haps, order, bin_size):
     """
     Evaluate segregation distortion across a set of chromosomes at a given resolution.
 
     Parameters
     ----------
     chrom_haps : dict of np.ndarray
-        Dictionary mapping chromosome names to arrays of shape
-        ``(barcodes, bins, haplotypes)`` containing predicted haplotype probabilities.
+        Dictionary mapping chromosome names to (haplotypes x bins) arrays of predicted haplotype
+        probabilities or binary calls.
     order : int
         Number of loci to test jointly (e.g., 1 for single-locus, 2 for pairwise).
     bin_size : int
         Size of genomic bins in base pairs (used to calculate positions).
-    expected_probs : np.ndarray
-        Expected per-haplotype probabilities under the experimental design.
 
     Returns
     -------
     pandas.DataFrame
-        Table of distortion results containing chromosomal coordinates, LOD scores,
-        and p-values from the log-likelihood chi-square statistic.
+        Table of distortion results containing:
+        - chromosome names and bin positions
+        - LOD score (log-likelihood ratio)
+        - p-value of chi-squared test
     """
-    design_expected = _expected_contingency(expected_probs, order) if order == 1 else None
-    df = expected_probs.size - 1 if order == 1 else None
     res = []
     for positions in it.product(*(np.arange(c.shape[1]) for c in chrom_haps.values())):
-        observed = _soft_contingency([
-            ch[:, p, :]
+        _, ct = stats.contingency.crosstab(*[
+            (ch[:, p] > 0.5)
             for ch, p in zip(chrom_haps.values(), positions)
         ])
-        expected = design_expected if order == 1 else _marginal_expected_contingency(observed)
-        curr_df = df if order == 1 else _independence_degrees_of_freedom(observed.shape)
-        lod = _g_test_lod(observed, expected)
-        pval = stats.chi2.sf(LOD * lod, curr_df)
-        res.append([*chrom_haps.keys(), *(p * bin_size for p in positions), lod, pval])
+        if order == 1:
+            exp = ct.sum() // 2
+            chi2, pval, *_ = stats.chi2_contingency([ct, [exp, exp]], lambda_='log-likelihood')
+        else:
+            chi2, pval, *_ = stats.chi2_contingency(ct, lambda_='log-likelihood')
+        res.append([*chrom_haps.keys(), *(p * bin_size for p in positions), chi2 / LOD, pval])
     res = pd.DataFrame(res, columns=[
         *(f'chrom_{i}' for i in range(1, order + 1)),
         *(f'pos_{i}' for i in range(1, order + 1)),
@@ -111,8 +61,7 @@ def downsample_chrom(chrom_co_preds, bin_size, resolution):
     Parameters
     ----------
     chrom_co_preds : np.ndarray
-        Haplotype matrix of shape (barcodes, bins) or (barcodes, bins, haplotypes)
-        for a single chromosome.
+        Haplotype matrix of shape (barcodes, bins) for a single chromosome.
     bin_size : int
         Original resolution of the binning.
     resolution : int
@@ -121,7 +70,7 @@ def downsample_chrom(chrom_co_preds, bin_size, resolution):
     Returns
     -------
     np.ndarray
-        Downsampled matrix.
+        Downsampled (barcodes, new_bins) matrix.
     """
     assert resolution >= bin_size and not resolution % bin_size
     cs = int(resolution / bin_size)
@@ -138,7 +87,7 @@ def segregation_distortion(co_preds,
 
     Parameters
     ----------
-    co_preds : PredictionRecords
+    co_preds : MarkerRecords
         Predictions object with crossover/haplotype probabilities per chromosome.
     order : int, default=1
         Number of loci to test jointly. 1 for single-locus, 2+ for multi-locus distortion.
@@ -155,13 +104,8 @@ def segregation_distortion(co_preds,
         - LOD scores
         - adjusted p-values after FDR correction
     """
-    if order < 1 or order > 3:
-        raise ValueError('segregation distortion order must be between 1 and 3')
-
-    expected_probs = np.asarray(co_preds.experiment_params.haplotype_dosage, dtype=float)
-    expected_probs = expected_probs / expected_probs.sum()
     co_preds_low_res = {
-        c: downsample_chrom(_chrom_haplotype_probabilities(co_preds, c),
+        c: downsample_chrom(co_preds[:, c].stack_values(),
                             co_preds.bin_size,
                             resolution)
         for c in co_preds.chrom_sizes
@@ -169,10 +113,7 @@ def segregation_distortion(co_preds,
     with Parallel(n_jobs=processes) as pool:
         res = pool(
             delayed(segregation_distortion_chroms)(
-                {c: co_preds_low_res[c] for c in chrom_perm},
-                order=order,
-                bin_size=resolution,
-                expected_probs=expected_probs,
+                {c: co_preds_low_res[c] for c in chrom_perm}, order=order, bin_size=resolution
             ) for chrom_perm in it.combinations(co_preds.chrom_sizes, r=order)
         )
     res = pd.concat(res).reset_index(drop=True)

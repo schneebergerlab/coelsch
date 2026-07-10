@@ -61,10 +61,22 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--independent-meioses/--joint-meioses',
+    subcommands=['predict', 'bam2pred', 'csl2pred'],
+    required=False,
+    default=None,
+    help=(
+        'Run independent haploid HMMs over separable meioses where supported. '
+        'By default this is enabled for three/four way founder designs and disabled otherwise.'
+    )
+)
+
+
+coelsch_opts.option(
     '--sample-co-locs/--no-sample-cos', 'sample_paths',
     subcommands=['predict', 'bam2pred', 'csl2pred'],
     required=False,
-    default=False,
+    default=True,
     help='Whether to sample stochastic crossover locations for each barcode'
 )
 
@@ -107,6 +119,15 @@ coelsch_opts.option(
     required=False,
     default=True,
     help='whether to generate a stats tsv file for the output predictions'
+)
+
+
+coelsch_opts.option(
+    '--write-bed/--no-write-bed',
+    subcommands=['predict', 'bam2pred', 'csl2pred'],
+    required=False,
+    default=True,
+    help='whether to write scalar prediction intervals as a BED file'
 )
 
 

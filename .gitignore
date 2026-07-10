@@ -7,6 +7,9 @@ __pycache__/
 # C extensions
 *.so
 
+# codex
+AGENTS.md
+
 # Distribution / packaging
 .Python
 env/
@@ -36,6 +39,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+REQUIRED.md
 htmlcov/
 .tox/
 .coverage
@@ -45,6 +49,7 @@ nosetests.xml
 coverage.xml
 *,cover
 .hypothesis/
+test_data/
 
 # Translations
 *.mo

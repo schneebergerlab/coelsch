@@ -4,7 +4,6 @@ import numpy as np
 import pysam
 
 from .haplotypes import MultiHaplotypeValidator
-from .utils import get_ha_samples
 from ..counts import IntervalUMICounts
 from coelsch.defaults import DEFAULT_EXCLUDE_CONTIGS
 
@@ -64,12 +63,12 @@ class BAMHaplotypeIntervalReader:
     """
 
     def __init__(self, bam_fn, *,
+                 allowed_haplotypes,
                  bin_size=25_000,
                  cb_tag='CB',
                  umi_tag='UB',
                  hap_tag='ha',
                  hap_tag_type='star_diploid',
-                 allowed_haplotypes=None,
                  cb_whitelist=None,
                  min_alignment_score=None,
                  min_mapq=None,
@@ -96,8 +95,8 @@ class BAMHaplotypeIntervalReader:
             The tag used for the haplotype (default is 'ha').
         hap_tag_type : str, optional
             The haplotype tag type ('star_diploid' or 'multi_haplotype', default is 'star_diploid').
-        allowed_haplotypes : list of str, optional
-            List of allowed haplotypes. If None, the haplotypes are extracted from the BAM header.
+        allowed_haplotypes : list of str
+            List of allowed haplotypes from the experimental design.
         cb_whitelist : coelsch.barcodes.CellBarcodeWhitelist, optional
             A whitelist for cell barcodes, supports 1MM fuzzy matching.
         umi_collapse_method : str, optional
@@ -111,6 +110,8 @@ class BAMHaplotypeIntervalReader:
         self.umi_tag = umi_tag if umi_collapse_method is not None else None
         self.hap_tag = hap_tag
         self.hap_tag_type = hap_tag_type
+        if allowed_haplotypes is None:
+            raise ValueError('allowed_haplotypes must be supplied')
         self.haplotypes = MultiHaplotypeValidator(allowed_haplotypes)
         self.cb_whitelist = cb_whitelist
 
@@ -140,8 +141,6 @@ class BAMHaplotypeIntervalReader:
         self.nbins = {}
         for chrom, cs in self.chrom_sizes.items():
             self.nbins[chrom] = int(np.ceil(cs / self.bin_size))
-        if self.hap_tag_type == 'multi_haplotype' and self.haplotypes == None:
-            self.haplotypes = MultiHaplotypeValidator(get_ha_samples(self._bam_fn))
 
     def fetch_interval_counts(self, chrom, bin_idx):
         """

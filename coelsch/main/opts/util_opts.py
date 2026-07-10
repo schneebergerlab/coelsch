@@ -20,7 +20,7 @@ coelsch_opts.option(
     subcommands=['predict', 'doublet', 'bam2pred', 'csl2pred', 'stats', 'segdist'],
     required=False,
     type=click.IntRange(1, 10),
-    default=5,
+    default=3,
     help='floating point precision in output files'
 )
 
@@ -44,8 +44,8 @@ coelsch_opts.option(
 coelsch_opts.option(
     '-v', '--verbosity',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
-                 'sim', 'concat', 'clean', 'predict',
-                 'doublet', 'stats', 'plot', 'segdist'],
+                 'sim', 'concat', 'inspect', 'clean', 'predict',
+                 'doublet', 'stats', 'plot', 'segdist', 'alaaf'],
     required=False,
     expose_value=False,
     metavar='LVL',

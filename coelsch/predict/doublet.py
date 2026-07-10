@@ -51,12 +51,18 @@ def detect_doublets(co_markers, co_preds, rhmm, n_doublets=1000,
 
     barcodes = co_preds.barcodes
     log_acc_score_real = np.log(np.array([
-        stats.accuracy_score(co_markers[cb], co_preds[cb])
+        stats.marker_agreement_score(
+            co_markers[cb],
+            {chrom: co_preds.get_haplotype_dosage(cb, chrom) for chrom in co_preds.chrom_sizes},
+        )
         for cb in barcodes
     ]))
 
     log_acc_score_sim = np.log(np.array([
-        stats.accuracy_score(sim_co_markers[cb], sim_co_preds[cb])
+        stats.marker_agreement_score(
+            sim_co_markers[cb],
+            {chrom: sim_co_preds.get_haplotype_dosage(cb, chrom) for chrom in sim_co_preds.chrom_sizes},
+        )
         for cb in sim_co_markers.barcodes
     ]))
 

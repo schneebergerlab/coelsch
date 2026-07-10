@@ -45,9 +45,27 @@ coelsch_opts.argument(
 
 
 coelsch_opts.argument(
+    'json-fn',
+    subcommands=['inspect'],
+    required=True,
+    nargs=1,
+    type=_input_file_type,
+)
+
+
+coelsch_opts.argument(
     'pred-json-fn',
     subcommands=['doublet', 'stats', 'segdist'],
     required=True,
+    nargs=1,
+    type=_input_file_type,
+)
+
+
+coelsch_opts.argument(
+    'pred-json-fn',
+    subcommands=['sim'],
+    required=False,
     nargs=1,
     type=_input_file_type,
 )
@@ -112,7 +130,7 @@ coelsch_opts.option(
     '-c', '--cb-whitelist-fn',
     subcommands=['loadbam', 'loadcsl', 'bam2pred', 'csl2pred',
                  'sim', 'clean', 'predict', 'doublet', 'stats',
-                 'plot', 'segdist'],
+                 'plot', 'segdist', 'inspect'],
     required=False,
     type=_input_file_type,
     help='Text file containing whitelisted cell barcodes, one per line'
@@ -150,7 +168,8 @@ coelsch_opts.option(
 coelsch_opts.option(
     '-g', '--ground-truth-fn',
     subcommands=['sim'],
-    required=True,
+    required=False,
     type=_input_file_type,
+    default=None,
     help='pred json or bed file (6 column) containing ground truth haplotype intervals to simulate'
 )

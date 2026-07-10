@@ -1,11 +1,13 @@
 import logging
-from collections import namedtuple, Counter
+from collections import Counter
 import numpy as np
 import pandas as pd
 
 import torch
 
 from .rhmm.utils import mask_array_zeros
+from .gt_assignment import assign_co_samples_to_gt
+from .utils import co_switch_resolver
 from ..records import PredictionRecords, NestedData, NestedDataArray
 from coelsch.main.logger import progress_bar
 from coelsch.defaults import DEFAULT_RANDOM_SEED
@@ -14,38 +16,35 @@ log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
-def samples_to_crossover_positions(haplotype_samples):
+def samples_to_crossover_events(hap_samples, experiment_params):
     """
-    Convert haplotype state samples to crossover positions and directions.
+    Convert sampled HMM haplotype paths to crossover event arrays.
 
-    Parameters
-    ----------
-    haplotype_samples : np.ndarray, shape (n_seq, n_samples, n_bins)
-        Haplotype identity paths (0/1 per bin).
-
-    Returns
-    -------
-    co_pos : list[list[np.ndarray]]
-        For each sequence and sample, array of crossover bin indices.
-    co_signs : list[list[np.ndarray]]
-        Same structure, with +1 for 0→1 and –1 for 1→0 transitions.
+    Each event row is ``[bin_idx, meiosis, sign]``. ``meiosis`` is -1 for
+    unphased F2 transitions, 0 for haploid/recombinant transitions, 1 for the
+    segregating backcross/testcross meiosis, and the changed tuple position for
+    three-way/four-way transitions.
     """
-    n_seq, n_samples, n_bins = haplotype_samples.shape
-    co_pos, co_signs = [], []
 
-    diffs = np.diff(haplotype_samples, axis=2)
+    n_seq, n_samples, _, n_haps = hap_samples.shape
+    events = []
 
-    for i in range(n_seq):
-        seq_diffs = diffs[i]
-        seq_pos, seq_sign = [], []
-        for d in seq_diffs:
-            p = np.nonzero(d)[0]
-            seq_pos.append(p)
-            seq_sign.append(np.sign(d[p]))
-        co_pos.append(seq_pos)
-        co_signs.append(seq_sign)
+    co_iter = co_switch_resolver(experiment_params)
 
-    return co_pos, co_signs
+    for seq in hap_samples:
+        seq_events = []
+        for samp in seq:
+            sample_events = []
+            for bin_idx, from_hap_idx, to_hap_idx in co_iter(samp):
+                sample_events.append((bin_idx, from_hap_idx, to_hap_idx))
+            if sample_events:
+                sample_events = np.asarray(sample_events, dtype=np.int32)
+            else:
+                sample_events = np.empty((0, 3), dtype=np.int32)
+            seq_events.append(sample_events)
+        events.append(seq_events)
+
+    return events
 
 
 def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
@@ -73,6 +72,7 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
     """
     seen_barcodes = co_markers.barcodes
     co_preds = PredictionRecords.new_like(co_markers)
+    called_haplotypes = NestedDataArray(levels=('cb', 'chrom'))
     if sample_paths:
         log.debug(f'Probable crossover locations will be sampled with {n_samples} bootstraps')
         crossover_samples=NestedDataArray(
@@ -85,23 +85,29 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
         item_show_func=str,
         hidden=not show_progress
     )
+    import click
     logprobs = Counter()
     with chrom_progress:
         for chrom in chrom_progress:
             X = np.array([co_markers[cb, chrom] for cb in seen_barcodes])
             if mask_empty_bins:
                 X = mask_array_zeros(X, axis=1)
-            X_pred = rhmm.predict(X, batch_size=batch_size)
+            X_pred, X_called = rhmm.predict(
+                X,
+                batch_size=batch_size,
+                return_called_haps=True,
+            )
             X_logprob = rhmm.log_probability(X, batch_size=batch_size)
-            for cb, p, lp in zip(seen_barcodes, X_pred, X_logprob):
+            for cb, p, called, lp in zip(seen_barcodes, X_pred, X_called, X_logprob):
                 co_preds[cb, chrom] = p
+                called_haplotypes[cb, chrom] = called
                 logprobs[cb] += lp
             if sample_paths:
                 X_samp = rhmm.sample(X, n=n_samples, batch_size=batch_size, rng=rng)
-                co_pos, co_signs = samples_to_crossover_positions(X_samp)
-                for cb, pos, sgn in zip(seen_barcodes, co_pos, co_signs):
-                    for samp, (p, s) in enumerate(zip(pos, sgn)):
-                        crossover_samples[cb, chrom, str(samp)] = np.stack([p, s], axis=-1)
+                events = samples_to_crossover_events(X_samp, co_markers.experiment_params)
+                for cb, cb_events in zip(seen_barcodes, events):
+                    for samp, sample_events in enumerate(cb_events):
+                        crossover_samples[cb, chrom, str(samp)] = sample_events
     co_preds.add_metadata(
         rhmm_params=NestedData(
             levels=('misc', ),
@@ -112,8 +118,16 @@ def detect_crossovers(co_markers, rhmm, mask_empty_bins=True,
             levels=('cb',),
             dtype=(float),
             data=dict(logprobs),
-        )
+        ),
+        called_haplotypes=called_haplotypes,
     )
     if sample_paths:
         co_preds.add_metadata(crossover_samples=crossover_samples)
+        if 'ground_truth' in co_markers.metadata:
+            co_sample_gt_assignment = assign_co_samples_to_gt(
+                crossover_samples,
+                co_markers.metadata['ground_truth'],
+                experiment_params=co_markers.experiment_params,
+            )
+            co_preds.add_metadata(co_sample_gt_assignment=co_sample_gt_assignment)
     return co_preds

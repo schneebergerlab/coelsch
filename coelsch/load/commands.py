@@ -4,12 +4,28 @@ import numpy as np
 from .loadbam import bam_to_co_markers
 from .loadcsl import cellsnp_lite_to_co_markers
 from .barcodes import read_cb_whitelist
+
+from coelsch.experiment.factories import create_experimental_design
 from coelsch.clean.filter import filter_low_coverage_barcodes, filter_genotyping_score
 from coelsch.defaults import DEFAULT_RANDOM_SEED
 
 
 log = logging.getLogger('coelsch')
 DEFAULT_RNG = np.random.default_rng(DEFAULT_RANDOM_SEED)
+
+
+def _read_recombinant_parental_haplotypes(recombinant_parental_haplotypes):
+    if recombinant_parental_haplotypes is None:
+        return None
+
+    from coelsch.records.records import PredictionRecords
+
+    return tuple(
+        haplotypes
+        if isinstance(haplotypes, PredictionRecords)
+        else PredictionRecords.read_json(haplotypes)
+        for haplotypes in recombinant_parental_haplotypes
+    )
 
 
 def _post_load_filtering(co_markers, min_markers_per_cb, min_markers_per_chrom,
@@ -37,13 +53,14 @@ def _post_load_filtering(co_markers, min_markers_per_cb, min_markers_per_chrom,
 
 
 def run_loadbam(bam_fn, output_json_fn, *,
-                cb_whitelist_fn=None, bin_size=25_000,
-                seq_type=None, ploidy_type='haploid',
+                cb_whitelist_fn=None, bin_size=25_000, seq_type='other', 
+                lifecycle_stage='gametes', crossing_strategy='f1', sample_unit='auto',
                 cb_tag='CB', cb_correction_method='exact',
                 umi_tag='UB', umi_collapse_method='directional',
                 hap_tag='ha', hap_tag_type='star_diploid',
                 min_alignment_score=0.95, min_mapq=None,
-                run_genotype=False, genotype_crossing_combinations=None,
+                run_genotype=False, genotyping_strategy='founder',
+                genotype_crossing_combinations=None,
                 genotype_recombinant_parental_haplotypes=None,
                 genotype_em_max_iter=1000, genotype_em_min_delta=1e-3,
                 genotype_em_bootstraps=25, validate_barcodes=True,
@@ -66,9 +83,12 @@ def run_loadbam(bam_fn, output_json_fn, *,
         The size of each bin in base pairs (default is 25,000).
     seq_type : str, optional
         The type of sequencing data (default is None).
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        (e.g. "haploid", "diploid_bc1", "diploid_f2", default is "haploid").
+    lifecycle_stage : str
+        A string describing the lifecycle stage/ploidy of the sample
+        (e.g. "gametes" or "progeny").
+    crossing_strategy : str
+        A string describing the crossing strategy of the experiment
+        (e.g. "f1", "f2", "backcross", "testcross", "three_way", "four_way").
     cb_tag : str, optional
         The tag used to identify cell barcodes in the BAM file (default is 'CB').
     cb_correction_method : str, optional
@@ -83,7 +103,10 @@ def run_loadbam(bam_fn, output_json_fn, *,
         The haplotype tag type (default is 'star_diploid').
     run_genotype : bool, optional
         If True, perform genotyping (default is False).
-    genotype_crossing_combinations : list of frozenset, optional
+    genotyping_strategy : str
+        A string describing the genotyping strategy to use for the sample
+        (e.g. "founder" or "recombinant").
+    genotype_crossing_combinations : list of str, optional
         List of allowed crossing combinations for genotyping (default is None).
     genotype_recombinant_parental_haplotypes : tuple or None, optional
         Switched on recombinant mode. A tuple of length 2 containing the paths to the two 
@@ -120,21 +143,38 @@ def run_loadbam(bam_fn, output_json_fn, *,
         validate_barcodes=validate_barcodes,
         cb_correction_method=cb_correction_method
     )
+
+    if genotyping_strategy == 'recombinant':
+        genotype_recombinant_parental_haplotypes = _read_recombinant_parental_haplotypes(
+            genotype_recombinant_parental_haplotypes
+        )
+    else:
+        genotype_recombinant_parental_haplotypes = None
+
+    experimental_design = create_experimental_design(
+        lifecycle_stage=lifecycle_stage,
+        crossing_strategy=crossing_strategy,
+        sequencing_type=seq_type,
+        genotyping_strategy=genotyping_strategy,
+        sample_unit=sample_unit,
+        crossing_combinations=genotype_crossing_combinations,
+        recombinant_parental_haplotypes=genotype_recombinant_parental_haplotypes,
+        bam_fn=bam_fn,
+        has_named_haplotypes=hap_tag_type == 'multi_haplotype',
+    )
+
     co_markers = bam_to_co_markers(
-        bam_fn, processes=processes,
+        bam_fn,
+        experimental_design=experimental_design,
+        processes=processes,
         bin_size=bin_size,
-        seq_type=seq_type,
-        ploidy_type=ploidy_type,
         cb_tag=cb_tag,
         umi_tag=umi_tag,
         umi_collapse_method=umi_collapse_method,
         hap_tag=hap_tag,
         hap_tag_type=hap_tag_type,
         run_genotype=run_genotype,
-        recombinant_mode=genotype_recombinant_parental_haplotypes is not None,
         genotype_kwargs={
-            'crossing_combinations': genotype_crossing_combinations,
-            'recombinant_parental_haplotypes': genotype_recombinant_parental_haplotypes,
             'max_iter': genotype_em_max_iter,
             'min_delta': genotype_em_min_delta,
             'n_bootstraps': genotype_em_bootstraps,
@@ -162,9 +202,9 @@ def run_loadbam(bam_fn, output_json_fn, *,
 
 def run_loadcsl(cellsnp_lite_dir, chrom_sizes_fn, output_json_fn, *,
                 cb_whitelist_fn=None, bin_size=25_000, snp_counts_only=False,
-                seq_type=None, ploidy_type='haploid',
-                run_genotype=False, genotype_vcf_fn=None,
-                genotype_crossing_combinations=None,
+                seq_type='other', lifecycle_stage='gametes', crossing_strategy='f1', sample_unit='auto',
+                run_genotype=False, genotyping_strategy='founder',
+                genotype_vcf_fn=None, genotype_crossing_combinations=None,
                 genotype_recombinant_parental_haplotypes=None,
                 reference_genotype_name='col0',
                 genotype_em_max_iter=1000, genotype_em_min_delta=1e-3, genotype_em_bootstraps=25,
@@ -190,15 +230,21 @@ def run_loadcsl(cellsnp_lite_dir, chrom_sizes_fn, output_json_fn, *,
         The bin size for partitioning the genome into intervals (default is 25,000).
     seq_type : str, optional
         The type of sequencing data (default is None).
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        (e.g. "haploid", "diploid_bc1", "diploid_f2", default is None).
+    lifecycle_stage : str
+        A string describing the lifecycle stage/ploidy of the sample
+        (e.g. "gametes" or "progeny").
+    crossing_strategy : str
+        A string describing the crossing strategy of the experiment
+        (e.g. "f1", "f2", "backcross", "testcross", "three_way", "four_way").
     snp_counts_only : bool, optional
         Whether to only count SNPs, instead of the number of reads per SNP (default is False).
     run_genotype : bool, optional
         If True, performs genotyping using the provided VCF files (default is False).
     genotype_vcf_fn : str, optional
         Path to the VCF file for genotyping. Required if `run_genotype` is True.
+    genotyping_strategy : str
+        A string describing the genotyping strategy to use for the sample
+        (e.g. "founder" or "recombinant").
     genotype_crossing_combinations : list, optional
         List of genotype crossing combinations for the genotyping process (default is None).
     genotype_recombinant_parental_haplotypes : tuple or None, optional
@@ -235,22 +281,39 @@ def run_loadcsl(cellsnp_lite_dir, chrom_sizes_fn, output_json_fn, *,
     """
 
     cb_whitelist = read_cb_whitelist(cb_whitelist_fn, validate_barcodes=validate_barcodes)
+
+    if genotyping_strategy == 'recombinant':
+        genotype_recombinant_parental_haplotypes = _read_recombinant_parental_haplotypes(
+            genotype_recombinant_parental_haplotypes
+        )
+    else:
+        genotype_recombinant_parental_haplotypes = None
+
+    experimental_design = create_experimental_design(
+        lifecycle_stage=lifecycle_stage,
+        crossing_strategy=crossing_strategy,
+        sequencing_type=seq_type,
+        genotyping_strategy=genotyping_strategy,
+        sample_unit=sample_unit,
+        crossing_combinations=genotype_crossing_combinations,
+        recombinant_parental_haplotypes=genotype_recombinant_parental_haplotypes,
+        vcf_fn=genotype_vcf_fn,
+        ref_name=reference_genotype_name,
+        has_named_haplotypes=genotype_vcf_fn is not None,
+    )
+
     co_markers = cellsnp_lite_to_co_markers(
         cellsnp_lite_dir,
         chrom_sizes_fn,
+        experimental_design,
         bin_size=bin_size,
         cb_whitelist=cb_whitelist,
-        seq_type=seq_type,
-        ploidy_type=ploidy_type,
         validate_barcodes=validate_barcodes,
         snp_counts_only=snp_counts_only,
         run_genotype=run_genotype,
-        recombinant_mode=genotype_recombinant_parental_haplotypes is not None,
         genotype_vcf_fn=genotype_vcf_fn,
         reference_name=reference_genotype_name,
         genotype_kwargs={
-            'crossing_combinations': genotype_crossing_combinations,
-            'recombinant_parental_haplotypes': genotype_recombinant_parental_haplotypes,
             'max_iter': genotype_em_max_iter,
             'min_delta': genotype_em_min_delta,
             'n_bootstraps': genotype_em_bootstraps,

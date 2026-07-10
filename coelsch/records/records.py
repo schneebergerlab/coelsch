@@ -4,6 +4,7 @@ import sys
 import inspect
 from copy import copy, deepcopy
 from collections import defaultdict
+import itertools as it
 import json
 
 import numpy as np
@@ -11,6 +12,7 @@ import pandas as pd
 
 from .base import NestedData, NestedDataArray
 from .groupby import RecordsGroupyBy
+from coelsch.experiment.params import ExperimentParams
 from coelsch.load.counts import IntervalMarkerCounts
 
 log = logging.getLogger('coelsch')
@@ -40,8 +42,10 @@ class BaseRecords(object):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams = None,
+                 ndim: int | None = None,
+                 dim2_shape: int | None = None,
+                 init_val: int | float = 0.0,
                  metadata: dict | None = None,
                  frozen=False):
         """
@@ -51,11 +55,8 @@ class BaseRecords(object):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
         metadata : dict of coelsch.metadata.MetadataDict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
@@ -63,18 +64,24 @@ class BaseRecords(object):
         """
         self.chrom_sizes = chrom_sizes
         self.bin_size = bin_size
-        self.seq_type = seq_type
-        self.ploidy_type = ploidy_type
+        if experiment_params is not None:
+            if not isinstance(experiment_params, ExperimentParams):
+                raise TypeError(
+                    "experiment_params must be a coelsch.experiment.ExperimentParams object"
+                )
+        self.experiment_params = experiment_params
         self.metadata = {}
         if metadata is not None:
             if not isinstance(metadata, dict):
                 raise ValueError('metadata must be dict or None')
             self.add_metadata(**metadata)
-                    
+
         self._cmd = []
-        self._ndim = None
-        self._dim2_shape = None
-        self._init_val = None
+        if ndim == 1 and dim2_shape is not None:
+            raise ValueError("Cannot supply dim2_shape when ndim == 1")
+        self._ndim = ndim
+        self._dim2_shape = dim2_shape
+        self._init_val = init_val
         self.frozen = frozen
         self.nbins = {
             chrom: int(np.ceil(cs / bin_size)) for chrom, cs in chrom_sizes.items()
@@ -248,9 +255,8 @@ class BaseRecords(object):
 
     def deep_keys(self):
         '''iterable of deep keys (cell barcode, chrom pairs)'''
-        for cb, sd in self._records.items():
-            for chrom in sd:
-                yield chrom, sd
+        for cb, chrom, _ in self._records.deep_items():
+            yield cb, chrom
 
     def values(self):
         '''iterable of top level values (i.e. dict[chrom: marker array])'''
@@ -266,7 +272,7 @@ class BaseRecords(object):
         return self._records.pop(cb)
 
     @classmethod
-    def new_like(cls, other, copy_metadata=True):
+    def new_like(cls, other, copy_metadata=True, frozen=None):
         """
         Create a new empty object like another `BaseRecords` instance.
 
@@ -274,6 +280,10 @@ class BaseRecords(object):
         ----------
         other : BaseRecords
             Template object to mimic.
+        copy_metadata : bool
+            Whether to copy metadata
+        frozen : bool or None
+            Inherit if None, else set frozen state
 
         Returns
         -------
@@ -284,10 +294,13 @@ class BaseRecords(object):
         new_instance = cls(
             copy(other.chrom_sizes),
             other.bin_size,
-            copy(other.seq_type),
-            copy(other.ploidy_type),
-            deepcopy(other.metadata) if copy_metadata else None
+            deepcopy(other.experiment_params),
+            metadata=deepcopy(other.metadata) if copy_metadata else None,
+            frozen=frozen if frozen is not None else other.frozen
         )
+        if type(other) == cls:
+            new_instance._ndim = other._ndim
+            new_instance._dim2_shape = other._dim2_shape
         new_instance._cmd = other._cmd
         return new_instance
 
@@ -355,11 +368,10 @@ class BaseRecords(object):
             raise ValueError('chrom_sizes do not match')
         if self.bin_size != other.bin_size:
             raise ValueError('bin_sizes do not match')
-        if self.seq_type != other.seq_type:
-            log.warning(
-                'merged datasets do not appear to be the same sequencing data type: '
-                f'{self.seq_type} and {other.seq_type}'
-            )
+        if (self._ndim != other._ndim) or (self._dim2_shape != other._dim2_shape):
+            raise ValueError('dimensions do not match')
+        if self.experiment_params != other.experiment_params:
+            raise ValueError('experiment_params do not match')
 
         if inplace:
             s = self
@@ -544,7 +556,7 @@ class BaseRecords(object):
             name: metadata.to_json(precision=None) for name, metadata in self.metadata.items()
         }
 
-    def to_json(self, precision: int = 5, encode_method="full"):
+    def to_json(self, precision: int = 3, encode_method="full"):
         """
         Convert the records object to a JSON string.
 
@@ -562,15 +574,14 @@ class BaseRecords(object):
             'dtype': self.__class__.__qualname__,
             'cmd': self._cmd + [' '.join(sys.argv)],
             'bin_size': self.bin_size,
-            'sequencing_data_type': self.seq_type,
-            'ploidy_type': self.ploidy_type,
+            'experiment_params': self.experiment_params.to_json(),
             'chrom_sizes': self.chrom_sizes,
             'shape': self.nbins,
             'records': self._records.to_json(precision, encode_method),
-            'metadata': self._metadata_to_json()
+            'metadata': self._metadata_to_json(),
         })
 
-    def write_json(self, fp: str, precision: int = 2):
+    def write_json(self, fp: str, precision: int = 3):
         """
         Write JSON representation to file.
 
@@ -617,16 +628,27 @@ class BaseRecords(object):
             obj = json.loads(fp_or_obj)
         if obj['dtype'] != cls.__qualname__:
             raise ValueError(f'json file does not match signature for {cls.__qualname__}')
+
+        if 'experiment_params' in obj:
+            exp_params = ExperimentParams.from_json(obj['experiment_params'])
+        else:
+            log.warning('loaded object is out of date, consider regenerating with a newer version of coelsch')
+            exp_params = ExperimentParams.from_legacy(
+                seq_type=obj.get('sequencing_data_type', 'other'),
+                ploidy_type=obj.get('ploidy_type', 'haploid'),
+            )
+
         new_instance = cls(obj['chrom_sizes'],
                            obj['bin_size'],
-                           seq_type=obj.get('sequencing_data_type', 'other'),
-                           ploidy_type=obj.get('ploidy_type', 'haploid'),
+                           experiment_params=exp_params,
                            metadata=obj['metadata'],
                            frozen=frozen)
         new_instance._cmd = obj['cmd'] 
         new_instance._records = NestedDataArray.from_json(
             obj['records'], subset=subset
         )
+        for cb, chrom, arr in new_instance.deep_items():
+            new_instance._check_arr(arr, chrom)
         return new_instance
 
 
@@ -646,11 +668,8 @@ class MarkerRecords(BaseRecords):
         The size of each genomic bin.
     nbins : dict of str to int
         Dictionary mapping chromosome names to the number of bins per chromosome.
-    seq_type : str or None
-        A string describing the sequencing data type.
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        e.g. "haploid", "diploid_bc1", "diploid_f2".
+    experiment_params : coelsch.experiment.ExperimentParams
+        The experimental parametrisation
     metadata : dict
         Additional metadata for the record set.
     frozen : bool
@@ -696,9 +715,9 @@ class MarkerRecords(BaseRecords):
         Return the total number of markers for a barcode across all chromosomes
     add_cb_suffix(suffix, inplace=False)
         Append a suffix to all cell barcodes in object
-    to_json(precision=2)
+    to_json(precision=3)
         Convert the records object to a JSON string.
-    write_json(fp, precision=2)
+    write_json(fp, precision=3)
         Write the records object to a JSON file path.
     read_json(fp, subset=None, frozen=False)
         Read a BaseRecords object from a file path
@@ -707,8 +726,7 @@ class MarkerRecords(BaseRecords):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -723,20 +741,22 @@ class MarkerRecords(BaseRecords):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
         metadata : dict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
             If True, prevents creation of new keys in the records.
         """
-        super().__init__(chrom_sizes, bin_size, seq_type, ploidy_type, metadata, frozen)
-        self._ndim = 2
-        self._dim2_shape = 2
-        self._init_val = 0.0
+        super().__init__(
+            chrom_sizes, bin_size, experiment_params,
+            ndim=2, dim2_shape=experiment_params.n_haplotypes, init_val=0.0,
+            metadata=metadata, frozen=frozen
+        )
+
+    @property
+    def n_haplotypes(self):
+        return self._dim2_shape
 
     def update(self, interval_counts):
         """
@@ -798,7 +818,7 @@ class MarkerRecords(BaseRecords):
             tot += m.sum(axis=None)
         return tot
 
-    def to_json(self, precision: int = 5):
+    def to_json(self, precision: int = 3):
         return super().to_json(precision, encode_method='sparse')
 
 
@@ -818,11 +838,8 @@ class PredictionRecords(BaseRecords):
         The size of each genomic bin.
     nbins : dict of str to int
         Dictionary mapping chromosome names to the number of bins per chromosome.
-    seq_type : str or None
-        A string describing the sequencing data type.
-    ploidy_type : str or None
-        A string describing the ploidy type and crossing strategy of the data
-        e.g. "haploid", "diploid_bc1", "diploid_f2".
+    experiment_params : coelsch.experiment.ExperimentParams
+        The experimental parametrisation
     metadata : dict
         Additional metadata for the record set.
     frozen : bool
@@ -866,11 +883,11 @@ class PredictionRecords(BaseRecords):
         Iterate over all cell barcodes for a given chromosome.
     add_cb_suffix(suffix, inplace=False)
         Append a suffix to all cell barcodes in object
-    to_json(precision=2)
+    to_json(precision=3)
         Convert the records object to a JSON string.
     to_frame(cb_whitelist=None):
         Convert the records object to a pandas DataFrame
-    write_json(fp, precision=2)
+    write_json(fp, precision=3)
         Write the records object to a JSON file path.
     read_json(fp, subset=None, frozen=False)
         Read a BaseRecords object from a file path
@@ -879,8 +896,7 @@ class PredictionRecords(BaseRecords):
     def __init__(self,
                  chrom_sizes: dict[str, int],
                  bin_size: int,
-                 seq_type: str | None = None,
-                 ploidy_type: str | None = None,
+                 experiment_params: ExperimentParams,
                  metadata: dict | None = None,
                  frozen: bool = False):
         """
@@ -895,20 +911,22 @@ class PredictionRecords(BaseRecords):
             Dictionary mapping chromosome names to chromosome sizes.
         bin_size : int
             The size of each genomic bin.
-        seq_type : str or None, optional
-            A string describing the sequencing data type.
-        ploidy_type : str or None
-            A string describing the ploidy type and crossing strategy of the data
-            e.g. "haploid", "diploid_bc1", "diploid_f2".
+        experiment_params : coelsch.experiment.ExperimentParams
+            The experimental parametrisation
         metadata : dict or None, optional
             Additional metadata for the record set.
         frozen : bool, default=False
             If True, prevents creation of new keys in the records.
         """
-        super().__init__(chrom_sizes, bin_size, seq_type, ploidy_type, metadata, frozen)
-        self._ndim = 1
-        self._dim2_shape = np.nan
-        self._init_val = np.nan
+
+        ndim = 2 if experiment_params.n_haplotypes > 2 else 1
+        dim2_shape = experiment_params.n_haplotypes if ndim == 2 else None
+
+        super().__init__(
+            chrom_sizes, bin_size, experiment_params,
+            ndim=ndim, dim2_shape=dim2_shape, init_val=np.nan,
+            metadata=metadata, frozen=frozen,
+        )
 
     def merge(self, other, inplace=False):
         return super().merge(
@@ -916,6 +934,147 @@ class PredictionRecords(BaseRecords):
             merge_method='overwrite_ignore_nan',
             inplace=inplace
         )
+
+    def _haplotype_groups_by_meiosis(self):
+        if self.experiment_params.crossing_strategy == 'f2':
+            raise NotImplementedError(
+                'F2 haplotype labels cannot be assigned to resolved meioses'
+            )
+
+        states = self.experiment_params.haplotype_states
+        return tuple(
+            tuple(sorted({state[meiosis_idx] for state in states}))
+            for meiosis_idx in range(len(states[0]))
+        )
+
+    def _as_haplotype_dosage(self, obj):
+        if isinstance(obj, NestedDataArray):
+            obj = copy(obj)
+            for *key, arr in obj.deep_items():
+                obj[tuple(key)] = self._as_haplotype_dosage(arr)
+            return obj
+
+        arr = np.asarray(obj, dtype=float)
+
+        if arr.ndim == 1:
+            return np.stack(
+                [self.experiment_params.ploidy - arr, arr],
+                axis=1,
+            )
+
+        if arr.ndim != 2:
+            raise ValueError('haplotype dosage must be scalar or matrix shaped')
+
+        if arr.shape[1] != self.experiment_params.n_haplotypes:
+            raise ValueError(
+                f'haplotype dosage has {arr.shape[1]} columns, expected '
+                f'{self.experiment_params.n_haplotypes}'
+            )
+
+        return arr
+
+    def _nearest_haplotype_state_dosage(self, dosage):
+        if isinstance(dosage, NestedDataArray):
+            dosage = copy(dosage)
+            for *key, arr in dosage.deep_items():
+                dosage[tuple(key)] = self._nearest_haplotype_state_dosage(arr)
+            return dosage
+
+        state_dosage = np.asarray(
+            self.experiment_params.haplotype_state_dosage_patterns,
+            dtype=float,
+        )
+        d = ((dosage[:, None, :] - state_dosage[None, :, :]) ** 2).sum(axis=2)
+        state = np.argmin(d, axis=1)
+        return state_dosage[state]
+
+    def get_haplotype_dosage(self, cb=None, chrom=None, as_called_haps=False):
+        if cb is None:
+            cb = slice(None)
+        if chrom is None:
+            chrom = slice(None)
+        if as_called_haps:
+            try:
+                return self._as_haplotype_dosage(
+                    self.metadata['called_haplotypes'][cb, chrom]
+                )
+            except KeyError:
+                dosage = self._as_haplotype_dosage(self[cb, chrom])
+                return self._nearest_haplotype_state_dosage(dosage)
+
+        return self._as_haplotype_dosage(self[cb, chrom])
+
+    def iter_scalar_haplotypes(self, chrom, as_called_haps=False):
+        params = self.experiment_params
+        haps = self.get_haplotype_dosage(
+            chrom=chrom, as_called_haps=as_called_haps
+        ).stack_values() # stacks to (n_samples, n_bins, n_haps)
+
+        def require_matrix(strategy):
+            if haps.ndim != 3:
+                raise ValueError(
+                    f'{strategy} scalar haplotypes require multichannel PredictionRecords'
+                )
+
+        if params.genotyping_strategy == 'recombinant' or params.crossing_strategy in {'f1', 'f2', 'backcross'}:
+            if haps.ndim == 2:
+                yield None, haps
+            elif haps.ndim == 3 and haps.shape[2] > 1:
+                yield None, haps[:, :, 1]
+            else:
+                raise ValueError('scalar haplotypes require scalar records or channel 1')
+            return
+
+        if params.crossing_strategy == 'testcross':
+            require_matrix('testcross')
+            yield 'parent2', haps[:, :, 2]
+            return
+
+        if params.crossing_strategy == 'three_way':
+            require_matrix('three_way')
+            yield 'parent1', haps[:, :, 1]
+            yield 'parent2', haps[:, :, 2]
+            return
+
+        if params.crossing_strategy == 'four_way':
+            require_matrix('four_way')
+            yield 'parent1', haps[:, :, 1]
+            yield 'parent2', haps[:, :, 3]
+            return
+
+        raise NotImplementedError(
+            f'scalar haplotypes are not implemented for {params.crossing_strategy!r}'
+        )
+
+    def _haplotype_labels_to_genotype_keys(self, cb, labels):
+        from coelsch.experiment.genotypes import GenotypeKey
+
+        genotypes = self.metadata.get('genotypes', {})
+        if cb not in genotypes:
+            genotype = GenotypeKey.get_dummy_geno(self.experiment_params)
+        else:
+            genotype = GenotypeKey.from_any(genotypes[cb])
+        genotype_keys = []
+        for label in labels:
+            mapped = tuple(genotype.founders[hap] for hap in label)
+            pos_tree = mapped[0] if len(mapped) == 1 else mapped
+            genotype_keys.append(GenotypeKey(pos_tree, name=cb))
+        return tuple(genotype_keys)
+
+    def get_haplotype_labels(self, cb, chrom, as_genotype_keys=False):
+        labels = []
+        dosage = self.get_haplotype_dosage(cb, chrom, as_called_haps=True)
+        dosage = dosage.astype(int)
+        for bin_dosage in dosage:
+            bin_haps, = np.nonzero(bin_dosage)
+            # account for dosage
+            haps = tuple(np.repeat(bin_haps, bin_dosage[bin_haps]))
+            labels.append(haps)
+
+        labels = tuple(labels)
+        if as_genotype_keys:
+            return self._haplotype_labels_to_genotype_keys(cb, labels)
+        return labels
 
     def to_frame(self, cb_whitelist=None, dtype=None):
         """
@@ -933,6 +1092,8 @@ class PredictionRecords(BaseRecords):
         pd.DataFrame
             DataFrame with shape (n_cells, n_bins) and multi-indexed columns with levels (chrom, pos).
         """
+        if self._ndim != 1:
+            raise NotImplementedError("to_frame only supports scalar PredictionRecords")
         frame = []
         columns = pd.MultiIndex.from_tuples(
             [(chrom, i * self.bin_size)
@@ -951,7 +1112,7 @@ class PredictionRecords(BaseRecords):
             )
         return pd.DataFrame(frame, index=cb_whitelist, columns=columns)
 
-    def get_haplotype(self, chrom, pos, cb_whitelist=None):
+    def haplotype_to_pandas(self, chrom, pos, cb_whitelist=None):
         """
         Retrieve prediction values across cell barcodes for a specific position.
 
@@ -975,26 +1136,34 @@ class PredictionRecords(BaseRecords):
             cb_whitelist = self.barcodes
         for cb in cb_whitelist:
             series.append(self._records[cb][chrom][idx])
-        return pd.Series(series, index=cb_whitelist, name=f'{chrom}:{pos:d}')
+        if self._ndim == 1:
+            return pd.Series(series, index=cb_whitelist, name=f'{chrom}:{pos:d}')
+        else:
+            return pd.DataFrame(
+                series,
+                index=cb_whitelist,
+                columns=range(self.experiment_params.n_haplotypes),
+            )
 
-    def to_json(self, precision: int = 5):
-        return super().to_json(precision, encode_method='full')
+    def to_json(self, precision: int = 3):
+        return super().to_json(precision, encode_method='rle')
 
-    def write_bed(self, fn, precision: int = 2):
+    def write_bed(self, fn):
+
         invs = []
         bs = self.bin_size
-        for chrom, cs in self.chrom_sizes.items():
-            for cb in self.barcodes:
-                p = np.round(self[cb, chrom], decimals=precision)
-                i = 0
-                iv = p[0]
-                for j, jv in enumerate(p[1:], 1):
-                    if iv != jv:
-                        invs.append((chrom, i * bs, j * bs, cb, iv))
-                        i = j
-                        iv = jv
-                invs.append((chrom, i * bs, cs, cb, iv))
+        for cb, chrom in self.deep_keys():
+            cs = self.chrom_sizes[chrom]
+            
+            labels = self.get_haplotype_labels(cb, chrom, as_genotype_keys=True)
+            start = 0
+            for hap, segment in it.groupby(labels):
+                end = start + len(list(segment)) * bs
+                invs.append((chrom, start, end, cb, hap))
+                start = end
+
         invs.sort()
         with open(fn, 'w') as f:
-            for chrom, start, end, cb, score in invs:
-                f.write(f'{chrom}\t{start:d}\t{end:d}\t{cb}\t{score:.{precision}f}\t.\n')
+            for chrom, start, end, cb, haps in invs:
+                name = f'{cb}|{",".join(haps.leaves)}'
+                f.write(f'{chrom}\t{start:d}\t{end:d}\t{name}\t.\t.\n')

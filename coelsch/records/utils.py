@@ -35,13 +35,17 @@ def validate_data(obj, expected_depth, expected_dtype):
 
 
 def quantise(arr, precision):
-    levels = 10 ** precision + 1
-    q = np.clip((arr * (levels - 1)).round(), 0, levels - 1)
-    return q.astype(np.uint16), levels
+    if precision is None:
+        raise ValueError('RLE encoding requires a finite precision')
+    if not np.all(np.isfinite(arr)):
+        raise ValueError('RLE encoding does not support non-finite values')
+    scale = 10 ** precision
+    q = np.rint(arr * scale)
+    return q.astype(np.min_scalar_type(q.astype(int))), scale
 
 
-def dequantise(q, levels, dtype):
-    return q.astype(dtype) / (levels - 1)
+def dequantise(q, scale, dtype):
+    return q.astype(dtype) / scale
 
 
 def run_length_encode(arr):
@@ -60,21 +64,29 @@ def run_length_decode(values, lengths):
     return np.repeat(values, lengths)
 
 
+def _json_float(v, precision):
+    v = float(v)
+    if precision is None or not np.isfinite(v):
+        return v
+    return round(v, precision)
+
+
 def array_encoder_full(arr, precision):
     return  {
         'shape': arr.shape,
         'dtype': arr.dtype.str,
-        'data': [round(float(v), precision) for v in arr.ravel()]
+        'data': [_json_float(v, precision) for v in arr.ravel()]
     }
 
 
 def array_encoder_rle(arr, precision):
-    quants, levels = quantise(arr.ravel(), precision)
+    quants, scale = quantise(arr.T.ravel(), precision)
     vals, lens = run_length_encode(quants)
     return {
         'shape': arr.shape,
         'dtype': arr.dtype.str,
-        'data': (vals.tolist(), lens.tolist(), levels)
+        'scale': scale,
+        'data': (vals.tolist(), lens.tolist())
     }
 
 
@@ -82,7 +94,7 @@ def array_encoder_sparse(arr, precision):
     shape = arr.shape
     arr = arr.ravel()
     idx = np.nonzero(arr)[0]
-    val = [round(float(v), precision) for v in arr[idx]]
+    val = [_json_float(v, precision) for v in arr[idx]]
     return {
         'shape': shape,
         'dtype': arr.dtype.str,
@@ -100,9 +112,10 @@ def array_decoder_full(json_obj):
 def array_decoder_rle(json_obj):
     shape = json_obj['shape']
     dtype = json_obj['dtype']
-    vals, lens, levels = json_obj['data']
+    scale = json_obj['scale']
+    vals, lens = json_obj['data']
     quants = run_length_decode(vals, lens)
-    arr = dequantise(quants, levels, dtype).reshape(shape)
+    arr = dequantise(quants, scale, dtype).reshape(tuple(reversed(shape))).T
     return arr
 
 

@@ -1,5 +1,5 @@
 import logging
-from coelsch.load.loadbam.utils import get_ha_samples
+from coelsch.experiment.utils import get_all_haplotypes_bam
 
 
 def log_parameters(log_name):
@@ -15,12 +15,35 @@ def log_parameters(log_name):
 log = logging.getLogger('coelsch')
 
 
+def _normalise_recombinant_parent_jsons(kwargs):
+    plural = kwargs.get('genotype_recombinant_parental_haplotypes')
+    singular = kwargs.pop('genotype_recombinant_parent_jsons', ())
+
+    if plural and singular:
+        log.error('provide either --recombinant-parent-json or --recombinant-parent-jsons, not both')
+
+    recombinant_jsons = plural or singular or None
+    if recombinant_jsons is not None and len(recombinant_jsons) not in {1, 2}:
+        log.error('--recombinant-parent-json can be provided once or twice')
+
+    kwargs['genotype_recombinant_parental_haplotypes'] = recombinant_jsons
+    return recombinant_jsons
+
+
 def validate_loadbam_input(kwargs):
     '''decorator to validate the input of the loadbam command'''
+    strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
+    recombinant_jsons = _normalise_recombinant_parent_jsons(kwargs)
+    if strategy == 'auto':
+        strategy = 'recombinant' if recombinant_jsons else 'founder'
+        log.info(f"setting genotyping strategy to '{strategy}'")
+    elif strategy == 'founder' and recombinant_jsons:
+        log.info('ignoring --recombinant-parent-jsons because --genotyping-strategy=founder')
+        kwargs['genotype_recombinant_parental_haplotypes'] = None
+    elif strategy == 'recombinant' and not recombinant_jsons:
+        log.error('--recombinant-parent-jsons must be provided when --genotyping-strategy=recombinant')
+    kwargs['genotyping_strategy'] = strategy
     seq_type = kwargs.get('seq_type')
-    if kwargs.get('ploidy_type') is None:
-        # set to haploid for loadbam and loadcsl, other commands infer from data
-        kwargs['ploidy_type'] = 'haploid'
     if kwargs.get('cb_correction_method') == 'auto':
         cb_tag = kwargs.get('cb_tag')
         method = 'exact' if cb_tag in ('CB', 'RG') else '1mm'
@@ -36,7 +59,7 @@ def validate_loadbam_input(kwargs):
             log.info('turning off UMI processing for 10x/Takara ATAC data, or WGS data')
             kwargs['umi_tag'] = None
             kwargs['umi_collapse_method'] = None
-        elif seq_type is None:
+        elif seq_type in (None, 'other'):
             log.error("'-x' / '--seq-type' must be specified when '--umi-collapse-method' is set to 'auto'")
     elif kwargs.get('umi_collapse_method') == 'none':
         log.info('turning off UMI processing')
@@ -55,7 +78,7 @@ def validate_loadbam_input(kwargs):
                     "'--cb-correction-method' is set to 'directional'. This may lead to overcorrection")
     if kwargs.get('run_genotype') and kwargs.get('hap_tag_type') == "star_diploid":
         log.error('--hap-tag-type must be "multi_haplotype" when --genotype is switched on')
-    if kwargs.get('genotype_recombinant_parental_haplotypes') and kwargs.get('genotype_crossing_combinations'):
+    if kwargs.get('genotyping_strategy') == 'recombinant' and kwargs.get('genotype_crossing_combinations'):
         log.error("Provide either --recombinant-parent-jsons or --crossing-combinations, not both.")
     if not kwargs.get('run_genotype') and kwargs.get('hap_tag_type') == "multi_haplotype":
         crossing_combinations = kwargs.get('genotype_crossing_combinations')
@@ -63,7 +86,7 @@ def validate_loadbam_input(kwargs):
             if len(crossing_combinations) != 1:
                 log.error('when --genotype is switched off only one --crossing-combinations can be provided')
         else:
-            genotypes = get_ha_samples(kwargs['bam_fn'])
+            genotypes = get_all_haplotypes_bam(kwargs['bam_fn'])
             if len(genotypes) != 2:
                 log.error(
                     'when --genotype is switched off and no --crossing-combinations are provided, '
@@ -74,12 +97,20 @@ def validate_loadbam_input(kwargs):
 
 def validate_loadcsl_input(kwargs):
     '''decorator to validate the input of the loadcsl command'''
-    if kwargs.get('ploidy_type') is None:
-        # set to haploid for loadbam and loadcsl, other commands infer from data
-        kwargs['ploidy_type'] = 'haploid'
+    strategy = (kwargs.get('genotyping_strategy') or 'auto').lower()
+    recombinant_jsons = _normalise_recombinant_parent_jsons(kwargs)
+    if strategy == 'auto':
+        strategy = 'recombinant' if recombinant_jsons else 'founder'
+        log.info(f"setting genotyping strategy to '{strategy}'")
+    elif strategy == 'founder' and recombinant_jsons:
+        log.info('ignoring --recombinant-parent-jsons because --genotyping-strategy=founder')
+        kwargs['genotype_recombinant_parental_haplotypes'] = None
+    elif strategy == 'recombinant' and not recombinant_jsons:
+        log.error('--recombinant-parent-jsons must be provided when --genotyping-strategy=recombinant')
+    kwargs['genotyping_strategy'] = strategy
     if kwargs.get('run_genotype') and kwargs.get('genotype_vcf_fn') is None:
         log.error('--genotype-vcf-fn must be provided when --genotype is switched on')
-    if kwargs.get('genotype_recombinant_parental_haplotypes') and kwargs.get('genotype_crossing_combinations'):
+    if kwargs.get('genotyping_strategy') == 'recombinant' and kwargs.get('genotype_crossing_combinations'):
         log.error("Provide either --recombinant-parent-jsons or --crossing-combinations, not both.")
     return kwargs
 
@@ -96,8 +127,28 @@ def validate_pred_input(kwargs):
     bin_size = kwargs.get('bin_size')
     seg_size = kwargs.get('segment_size')
     tseg_size = kwargs.get('terminal_segment_size')
+    if kwargs.get('independent_meioses', None) is None:
+        kwargs['independent_meioses'] = 'auto'
     if seg_size < bin_size:
         log.error("'-R' / '--segment-size' cannot be less than '-N' / '--bin-size'")
     if tseg_size < bin_size:
         log.error("'-t' / '--terminal-segment-size' cannot be less than '-N' / '--bin-size'")
+    return kwargs
+
+
+def validate_sim_input(kwargs):
+    """decorator to validate the input of the sim command"""
+    sim_cross_only = kwargs.get('sim_cross_only')
+    target = kwargs.get('target_crossing_strategy')
+    pred_json_fn = kwargs.get('pred_json_fn')
+    ground_truth_fn = kwargs.get('ground_truth_fn')
+
+    if sim_cross_only:
+        if target is None:
+            log.error('--target-crossing-strategy is required with --sim-cross-only')
+    else:
+        if pred_json_fn is None:
+            log.error('PRED_JSON_FN is required unless --sim-cross-only is used')
+        if ground_truth_fn is None:
+            log.error('--ground-truth-fn is required unless --sim-cross-only is used')
     return kwargs

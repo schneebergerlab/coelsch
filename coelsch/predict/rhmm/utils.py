@@ -1,4 +1,5 @@
 import warnings
+from collections import Counter
 import numpy as np
 import torch
 
@@ -31,12 +32,15 @@ def interp_nan_inplace(arr, axis):
             vec[nan_mask] = np.interp(x, xp, fp)
 
 
-def sorted_edit_distance(state1, state2):
-    dist = 0
-    for h1, h2 in zip(sorted(state1), sorted(state2)):
-        if h1 != h2:
-            dist += 1
-    return dist
+def multiset_edit_distance(a, b):
+    ca = Counter(a)
+    cb = Counter(b)
+    keys = ca.keys() | cb.keys()
+
+    n_del = sum(max(ca[k] - cb[k], 0) for k in keys)
+    n_add = sum(max(cb[k] - ca[k], 0) for k in keys)
+
+    return max(n_del, n_add)
 
 
 def numpy_to_torch(x):
@@ -59,6 +63,36 @@ def numpy_to_torch(x):
     return torch.from_numpy(np.asarray(x))
 
 
+def concat_arrays(X):
+    if any(isinstance(x, np.ma.MaskedArray) for x in X):
+        arr = np.ma.concatenate(X)
+        if np.asarray(arr.mask).shape == ():
+            arr.mask = np.zeros_like(arr.data, dtype=bool)
+        return arr
+    return np.concatenate(X)
+
+
+def data_and_mask(X):
+    if isinstance(X, np.ma.MaskedArray):
+        mask = np.ma.getmaskarray(X)
+        return X.filled(0).astype(float), ~mask
+    return np.asarray(X, dtype=float), np.ones_like(X, dtype=bool)
+
+
+def as_float_array(X):
+    if isinstance(X, np.ma.MaskedArray):
+        return X.filled(0).astype(float)
+    return np.asarray(X, dtype=float)
+
+
+def torch_to_numpy(x):
+    if hasattr(x, "detach"):
+        return x.detach().cpu().numpy()
+    if hasattr(x, "numpy"):
+        return x.numpy()
+    return np.asarray(x)
+
+
 def mask_array_zeros(X, axis=1):
     # allow negative axes
     if axis < 0:
@@ -72,3 +106,36 @@ def mask_array_zeros(X, axis=1):
     reshape[axis] = -1
     mask = np.broadcast_to(mask.reshape(reshape), X.shape)
     return np.ma.array(X, mask=mask)
+
+
+def format_params(params, columns, indent=2):
+    columns = [str(c) for c in columns]
+    rows = []
+
+    for k, v in sorted(params.items()):
+        arr = np.asarray(v)
+
+        if arr.ndim == 0:
+            values = [f"{float(arr):.4g}"] * len(columns)
+        else:
+            values = [f"{x:.4g}" for x in arr]
+
+        rows.append([k, *values])
+
+    header = ["param", *columns]
+    table = [header, *rows]
+
+    widths = [
+        max(len(str(row[i])) for row in table)
+        for i in range(len(header))
+    ]
+
+    lines = []
+    for row in table:
+        line = " ".join(
+            str(x).rjust(widths[i])
+            for i, x in enumerate(row)
+        )
+        lines.append(" " * indent + line)
+
+    return "\n".join(lines)

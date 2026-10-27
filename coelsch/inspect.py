@@ -29,7 +29,6 @@ def _print_experiment_params(experiment_params):
         "n_haplotypes",
         "n_haplotype_states",
         "haplotype_states",
-        "haplotype_dosage",
     )
     for field in fields:
         try:
@@ -47,6 +46,12 @@ def _print_info_summary(records):
     for chrom, size in records.chrom_sizes.items():
         log.info(f"  {chrom}: {size} bp, {records.nbins[chrom]} bins")
     _print_experiment_params(records.experiment_params)
+
+
+def _print_cmd(records):
+    log.info('commands:')
+    for cmd in records._cmd:
+        log.info(f'  {cmd}')
 
 
 def _print_genotypes(records):
@@ -82,7 +87,42 @@ def _print_barcodes(records):
         click.echo(f"{cb}")
 
 
-def run_inspect(json_fn, cb_whitelist_fn, genotypes=True, metadata=False, barcodes=False, query=None):
+def run_inspect(json_fn, cb_whitelist_fn, genotypes=True, metadata=False,
+                barcodes=False, cmd=False, query=None):
+    """
+    Inspect a MarkerRecords or PredictionRecords JSON file.
+
+    This command loads a coelsch records JSON file, optionally filters it with a
+    barcode whitelist and query string, then prints either a summary of the
+    records object or the selected barcode names.
+
+    Parameters
+    ----------
+    json_fn : str
+        Path to the records JSON file to inspect.
+    cb_whitelist_fn : str or None
+        Path to a file containing barcodes to retain before inspection. If None,
+        all records are loaded.
+    genotypes : bool, optional
+        Whether to print a genotype count summary when genotyping metadata is
+        present. Default is True.
+    metadata : bool, optional
+        Whether to print a summary of metadata entries. Default is False.
+    barcodes : bool, optional
+        Whether to print only barcode or sample names, one per line. Default is
+        False.
+    cmd : bool, optional
+        Whether to print the command history stored in the records object.
+        Default is False.
+    query : str or None, optional
+        BaseRecords query string used to filter records after loading. If None,
+        no query filter is applied.
+
+    Returns
+    -------
+    None
+        Inspection output is written to the coelsch logger or stdout.
+    """
     records = load_json(
         json_fn,
         cb_whitelist_fn=cb_whitelist_fn,
@@ -97,6 +137,8 @@ def run_inspect(json_fn, cb_whitelist_fn, genotypes=True, metadata=False, barcod
         _print_barcodes(records)
     else:
         _print_info_summary(records)
+        if cmd:
+            _print_cmd(records)
         if genotypes:
             _print_genotypes(records)
         if metadata:

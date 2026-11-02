@@ -155,6 +155,7 @@ def _build_zid(
     fg_alpha=None,
     bg_alpha=None,
     dist_type="poisson",
+    zero_inflation=True,
 ):
     means, alphas, _ = _calculate_model_params(
         dosages,
@@ -171,7 +172,7 @@ def _build_zid(
     else:
         raise NotImplementedError()
 
-    return ZeroInflated(dist)
+    return ZeroInflated(dist, zero_inflation=zero_inflation)
 
 
 def _build_gmm(
@@ -183,6 +184,7 @@ def _build_gmm(
     fg_alpha=None,
     bg_alpha=None,
     dist_type="poisson",
+    zero_inflation=True,
 ):
     dists = []
 
@@ -195,6 +197,7 @@ def _build_gmm(
                 fg_alpha,
                 bg_alpha,
                 dist_type,
+                zero_inflation=zero_inflation,
             )
         )
 
@@ -358,8 +361,13 @@ def _constrain_params(
     fg_prior = _shrink_to_shared(fg_prior, channel_strength, fallback=0.01)
     bg_prior = _shrink_to_shared(bg_prior, channel_strength, fallback=0.01)
 
-    fg_prior = np.clip(fg_prior, 1e-6, 1.0 - 1e-6)
-    bg_prior = np.clip(bg_prior, 1e-6, 1.0 - 1e-6)
+    zero_inflation = model_dists[0].zero_inflation
+    if zero_inflation:
+        fg_prior = np.clip(fg_prior, 1e-6, 1.0 - 1e-6)
+        bg_prior = np.clip(bg_prior, 1e-6, 1.0 - 1e-6)
+    else:
+        fg_prior = np.zeros(n_haplotypes)
+        bg_prior = np.zeros(n_haplotypes)
 
     if update:
         means, alphas, priors = _calculate_model_params(
@@ -395,11 +403,14 @@ def _constrain_params(
                     dist_alpha,
                 )
 
-            if dist_prior is not None:
-                _update_parameter(
-                    getattr(dist, "priors"),
+            if dist_prior is not None and zero_inflation:
+                p = torch.as_tensor(
                     dist_prior,
-                )
+                    dtype=dist.log_priors.dtype,
+                    device=dist.log_priors.device,
+                ).clamp(1e-6, 1.0 - 1e-6)
+                _update_parameter(dist.log_priors, torch.log(p))
+                _update_parameter(dist.log_1mpriors, torch.log1p(-p))
 
     return fg_mean, bg_mean, fg_alpha, bg_alpha, fg_prior, bg_prior
 
@@ -471,6 +482,7 @@ def estimate_emissions(
     channel_strength=0.75,
     max_iter=1000,
     tol=0.1,
+    zero_inflation=True,
 ):
     component_dosages = _expected_component_dosages(X, experiment_params)
     X_flattened = utils.concat_arrays(X)
@@ -500,6 +512,7 @@ def estimate_emissions(
         fg_alpha=init_fg_alpha,
         bg_alpha=init_bg_alpha,
         dist_type=dist_type,
+        zero_inflation=zero_inflation,
     )
 
     params = _fit_constrained_model(

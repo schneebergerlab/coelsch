@@ -186,18 +186,23 @@ class NegativeBinomial(Distribution):
 class ZeroInflated(Distribution):
     """A zero-inflated wrapper for generic distributions, supporting independent zero inflation per feature."""
 
-    def __init__(self, distribution, priors=None, inertia=0.0, frozen=False, check_data=True, eps=1e-8):
+    def __init__(self, distribution, priors=None, inertia=0.0, frozen=False,
+                 check_data=True, eps=1e-8, zero_inflation=True):
         if distribution.name not in ('Poisson', 'NegativeBinomial'):
             raise ValueError('ZeroInflated currently only implemented for Poisson/NB')
         super().__init__(inertia=inertia, frozen=frozen, check_data=check_data)
         self.name = "ZeroInflated({})".format(distribution.name)
         self.distribution = distribution
+        self.zero_inflation = bool(zero_inflation)
 
         d = getattr(distribution, "d", None)
         if d is None:
             raise ValueError("Base distribution must have a 'd' attribute for feature dimension.")
 
-        if priors is None:
+        if not self.zero_inflation:
+            priors = torch.zeros(d, dtype=self.dtype, device=self.device)
+            eps = 0.0
+        elif priors is None:
             priors = torch.full((d,), 0.5, dtype=self.dtype, device=self.device)
         priors = _check_parameter(_cast_as_parameter(priors), "priors", min_value=0.0, max_value=1.0, ndim=1, shape=(d,))
 
@@ -211,9 +216,10 @@ class ZeroInflated(Distribution):
         self._reset_cache()
 
     def _initialize(self, d):
-        # Uniform prior for initialization
-        log_p = torch.log(torch.full((d,), 0.5, dtype=self.dtype, device=self.device))
-        log_1mp = torch.log(1. - torch.full((d,), 0.5, dtype=self.dtype, device=self.device))
+        # Uniform prior for initialization, unless zero inflation is disabled.
+        prior = 0.5 if self.zero_inflation else 0.0
+        log_p = torch.log(torch.full((d,), prior, dtype=self.dtype, device=self.device))
+        log_1mp = torch.log(1. - torch.full((d,), prior, dtype=self.dtype, device=self.device))
         self.log_priors = _cast_as_parameter(log_p)
         self.log_1mpriors = _cast_as_parameter(log_1mp)
         self.d = d
@@ -254,14 +260,14 @@ class ZeroInflated(Distribution):
         elif self.distribution.name == "NegativeBinomial":
             meanj = self.distribution.means[j]
             alphaj = self.distribution.alphas[j]
-            pj = alphaj / (alphaj + meanj)
-            rj = alphaj
+            rj = 1.0 / alphaj
+            pj = rj / (rj + meanj)
             return (
                 torch.lgamma(xj + rj)
                 - torch.lgamma(rj)
                 - torch.lgamma(xj + 1)
                 + rj * torch.log(pj)
-                + xj * torch.log(1 - pj)
+                + xj * torch.log1p(-pj)
             )
         raise NotImplementedError(
             f"Per-feature log-probability for zero-inflated {self.distribution.name} is not implemented."
@@ -296,8 +302,8 @@ class ZeroInflated(Distribution):
             elif self.distribution.name == "NegativeBinomial":
                 meanj = self.distribution.means[j]
                 alphaj = self.distribution.alphas[j]
-                pj = alphaj / (alphaj + meanj)
-                rj = alphaj
+                rj = 1.0 / alphaj
+                pj = rj / (rj + meanj)
                 log_p0 = rj * torch.log(pj)
             else:
                 raise NotImplementedError(
@@ -326,11 +332,12 @@ class ZeroInflated(Distribution):
     def from_summaries(self):
         if self.frozen:
             return
-        priors_new = self._priors_sum / mt_clamp_min(self._zero_sum, min_val=1e-6)
-        log_priors_new = torch.log(priors_new + 1e-32)
-        log_1mpriors_new = torch.log(1. - priors_new + 1e-32)
-        _update_parameter(self.log_priors, log_priors_new, self.inertia)
-        _update_parameter(self.log_1mpriors, log_1mpriors_new, self.inertia)
+        if self.zero_inflation:
+            priors_new = self._priors_sum / mt_clamp_min(self._zero_sum, min_val=1e-6)
+            log_priors_new = torch.log(priors_new + 1e-32)
+            log_1mpriors_new = torch.log(1. - priors_new + 1e-32)
+            _update_parameter(self.log_priors, log_priors_new, self.inertia)
+            _update_parameter(self.log_1mpriors, log_1mpriors_new, self.inertia)
         if hasattr(self.distribution, "from_summaries"):
             self.distribution.from_summaries()
         self._reset_cache()

@@ -24,7 +24,7 @@ def _calculate_co_shrinkage(co_markers, min_shrink=0.15):
 
 def train_rhmm(co_markers, cm_per_mb=4.5,
                segment_size=1_000_000, terminal_segment_size=50_000, interference_half_life=100_000,
-               dist_type='poisson', mask_empty_bins=True, independent_meioses='auto',
+               dist_type='auto', zero_inflation='auto', mask_empty_bins=True, independent_meioses='auto',
                max_training_sequences=5_000, device=DEFAULT_DEVICE, rng=DEFAULT_RNG):
     """
     Constructs a RigidHMM instance and fits it to the crossover marker data.
@@ -80,6 +80,25 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
         X = [X[i] for i in training_idx]
 
     params = co_markers.experiment_params
+
+    if distribution_type == 'auto':
+        distribution_type = (
+            'poisson' if params.sample_unit == 'single_cell' else 'nb'
+        )
+        log.info(
+            f'Set distribution type to "{distribution_type}" to match '
+            f'sample unit {params.sample_unit}'
+        )
+
+    if zero_inflation == 'auto':
+        zero_inflation = (
+            params.sample_unit == 'single_cell'
+        )
+        log.info(
+            f"Turned zero inflation {'on' if zero_inflation else 'off'} "
+            f"to match sample unit {params.sample_unit}"
+        )
+
     if independent_meioses == 'auto':
         independent_meioses = (
             params.crossing_strategy in ('three_way', 'four_way')
@@ -96,7 +115,7 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
     states = params.haplotype_states
     n_haplotypes = co_markers.n_haplotypes
     fg_params, bg_params = estimate_emissions(
-        X, params, rfactor, dist_type=dist_type
+        X, params, rfactor, dist_type=dist_type, zero_inflation=zero_inflation
     )
 
     columns = [f'hap{i}' for i in range(1, n_haplotypes + 1)]
@@ -120,6 +139,7 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
             fg_params=fg_params,
             bg_params=bg_params,
             dist_type=dist_type,
+            zero_inflation=zero_inflation,
             trans_prob_decay_rate=trans_prob_decay_rate,
             device=device
         )
@@ -133,6 +153,7 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
         fg_params=fg_params,
         bg_params=bg_params,
         dist_type=dist_type,
+        zero_inflation=zero_inflation,
         trans_prob_decay_rate=trans_prob_decay_rate,
         device=device
     )

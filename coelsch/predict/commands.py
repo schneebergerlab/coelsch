@@ -22,7 +22,8 @@ def run_predict(marker_json_fn, output_json_fn, *,
                 co_markers=None,
                 cb_whitelist_fn=None, bin_size=25_000,
                 segment_size=1_000_000, terminal_segment_size=50_000,
-                cm_per_mb=4.5, interference_half_life=100_000, distribution_type='poisson',
+                cm_per_mb=4.5, interference_half_life=100_000,
+                distribution_type='auto', zero_inflation='auto',
                 independent_meioses='auto', sample_paths=True, n_samples=10,
                 predict_doublets=True, n_doublets=0.25, k_neighbours=0.25,
                 generate_stats=True, write_bed=True, nco_min_prob_change=2.5e-3,
@@ -55,7 +56,12 @@ def run_predict(marker_json_fn, output_json_fn, *,
         to enforce crossover-interference. If <1, this is considered a fraction of
         segment_size, else it is an absolute value in basepairs (default 0.1).
     distribution_type : str, optional
-        Type of distribution to use in rHMM - can be either poisson or nb.
+        Type of distribution to use in rHMM - can be either poisson, nb, or auto.
+        auto uses poisson for single cell and nb for resequencing data.
+    zero_inflation : bool or str, optional
+        Whether to use zero inflation for 
+    independent_meioses : bool or str, optional
+        add here
     sample_paths : bool, optional
         Whether to sample stochastic crossover locations for each barcode (default: True)
     n_samples : int, optional
@@ -105,6 +111,7 @@ def run_predict(marker_json_fn, output_json_fn, *,
         terminal_segment_size=terminal_segment_size,
         interference_half_life=interference_half_life,
         dist_type=distribution_type,
+        zero_inflation=zero_inflation,
         independent_meioses=independent_meioses,
         device=device,
     )

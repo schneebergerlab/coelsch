@@ -209,9 +209,11 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
             if np.any(chrom_marker_masks[chrom])
         ]
         if not valid_residual_chunks:
+            median = np.zeros(n_haplotypes, dtype=float)
             mad = np.ones(n_haplotypes, dtype=float)
         else:
             valid_residuals = np.concatenate(valid_residual_chunks)
+            median = np.median(valid_residuals, axis=0)
             mad = np.array([
                 median_absolute_deviation(valid_residuals[:, i])
                 for i in range(n_haplotypes)
@@ -219,12 +221,11 @@ def create_resequencing_haplotype_imbalance_mask(co_markers, expected_ratio='aut
             mad = np.maximum(mad, correction)
 
         for chrom, residuals in chrom_residuals.items():
-            residuals = residuals.copy()
-            residuals[~chrom_marker_masks[chrom]] = 0.0
             mask = np.any(
-                np.abs(residuals) > (mad[None, :] * nmad_mask),
+                np.abs(residuals - median[None, :]) > (mad[None, :] * nmad_mask),
                 axis=1,
             )
+            mask &= chrom_marker_masks[chrom]
             if dilate_mask:
                 mask = binary_dilation(mask)
             n_masked += mask.sum(axis=None)

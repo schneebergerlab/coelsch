@@ -68,7 +68,7 @@ coelsch_opts.option(
     default=None,
     help=(
         'Whether to use zero inflated distributions to model the count data. Default is to use ZI for '
-        'single cell and no ZI for bulk/wgs data. Note that bins that are masked during cleaning do not 
+        'single cell and no ZI for bulk/wgs data. Note that bins that are masked during cleaning do not '
         'contribute to the model.'
     )
 )

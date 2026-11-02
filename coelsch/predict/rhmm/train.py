@@ -81,12 +81,12 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
 
     params = co_markers.experiment_params
 
-    if distribution_type == 'auto':
-        distribution_type = (
+    if dist_type == 'auto':
+        dist_type = (
             'poisson' if params.sample_unit == 'single_cell' else 'nb'
         )
         log.info(
-            f'Set distribution type to "{distribution_type}" to match '
+            f'Set distribution type to "{dist_type}" to match '
             f'sample unit {params.sample_unit}'
         )
 

@@ -604,7 +604,7 @@ class RigidHMM:
             params['states'], params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
-            zero_inflation=bool(params.get('zero_inflation', 1.0)),,
+            zero_inflation=bool(params.get('zero_inflation', 1.0)),
             trans_prob_decay_rate=params['trans_prob_decay_rate'],
             n_haplotypes=int(n_haplotypes),
             device=device

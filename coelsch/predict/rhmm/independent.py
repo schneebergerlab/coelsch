@@ -204,7 +204,7 @@ class IndependentMeiosesHMM:
             'trans_prob': float(self.trans_prob),
             'trans_prob_decay_rate': float(self.trans_prob_decay_rate),
             'is_poisson': 1.0 if self.dist_type == 'poisson' else 0.0,
-            'zero_inflation': int(self.zero_inflation)
+            'zero_inflation': int(self.zero_inflation),
             'fg_lambda': list(self.fg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'bg_lambda': list(self.bg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'fg_mean': list(self.fg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
@@ -254,6 +254,7 @@ class IndependentMeiosesHMM:
             crossing_strategy, params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
+            zero_inflation=bool(params.get('zero_inflation', 1.0)),
             trans_prob_decay_rate=params['trans_prob_decay_rate'],
             device=device
         )

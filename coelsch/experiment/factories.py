@@ -230,33 +230,57 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
 
     positional_genotypes = PositionalGenotypes(
         left.nbins,
-        genotyping_strategy=experiment_params.genotyping_strategy
+        genotyping_strategy=experiment_params.genotyping_strategy,
     )
 
     for sample in left.barcodes:
         left_genotype = _metadata_genotype(left, sample)
         right_genotype = _metadata_genotype(right, sample)
 
-        genotype = GenotypeKey(
-            (left_genotype.to_nested_tuple(),
-             right_genotype.to_nested_tuple()),
-            name=sample,
-            preserve_order=True
+        # Canonicalise the overall genotype so that its ordering
+        # is preserved when serialised and reconstructed.
+        input_parents = (
+            left_genotype.to_nested_tuple(),
+            right_genotype.to_nested_tuple(),
         )
+
+        genotype = GenotypeKey(input_parents, name=sample)
         experiment_params.check_compatibility(genotype)
         positional_genotypes.add_genotype(genotype)
 
-        for chrom in left.chrom_sizes:
-            left_path = left.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
-            right_path = right.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
+        # Determine whether canonicalisation swapped the two parents.
+        canonical_parents = genotype.to_nested_tuple()
 
-            for bin_idx, (left_pos_genotype, right_pos_genotype) in enumerate(zip(left_path, right_path)):
+        if canonical_parents == input_parents:
+            swap_parents = False
+        elif canonical_parents == input_parents[::-1]:
+            swap_parents = True
+        else:
+            raise ValueError(
+                f"Unexpected genotype canonicalisation for {sample}"
+            )
+
+        for chrom in left.chrom_sizes:
+            left_path = left.get_haplotype_labels(
+                sample, chrom, as_genotype_keys=True
+            )
+            right_path = right.get_haplotype_labels(
+                sample, chrom, as_genotype_keys=True
+            )
+
+            if swap_parents:
+                left_path, right_path = right_path, left_path
+
+            for bin_idx, (left_pos, right_pos) in enumerate(zip(left_path, right_path)):
                 pos_tree = (
-                    left_pos_genotype.to_nested_tuple(),
-                    right_pos_genotype.to_nested_tuple(),
+                    left_pos.to_nested_tuple(),
+                    right_pos.to_nested_tuple(),
                 )
+
                 positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(
-                    pos_tree, name=sample, preserve_order=True
+                    pos_tree,
+                    name=sample,
+                    preserve_order=True,
                 )
 
     return ExperimentalDesign(

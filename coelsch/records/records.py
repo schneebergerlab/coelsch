@@ -1046,7 +1046,7 @@ class PredictionRecords(BaseRecords):
             f'scalar haplotypes are not implemented for {params.crossing_strategy!r}'
         )
 
-    def _haplotype_labels_to_genotype_keys(self, cb, labels):
+    def _haplotype_labels_to_genotype_keys(self, cb, labels, preserve_order=False):
         from coelsch.experiment.genotypes import GenotypeKey
 
         genotypes = self.metadata.get('genotypes', {})
@@ -1058,10 +1058,13 @@ class PredictionRecords(BaseRecords):
         for label in labels:
             mapped = tuple(genotype.founders[hap] for hap in label)
             pos_tree = mapped[0] if len(mapped) == 1 else mapped
-            genotype_keys.append(GenotypeKey(pos_tree, name=cb))
+            genotype_keys.append(GenotypeKey(
+                pos_tree, name=cb,
+                preserve_order=preserve_order
+            ))
         return tuple(genotype_keys)
 
-    def get_haplotype_labels(self, cb, chrom, as_genotype_keys=False):
+    def get_haplotype_labels(self, cb, chrom, as_genotype_keys=False, preserve_order=False):
         labels = []
         dosage = self.get_haplotype_dosage(cb, chrom, as_called_haps=True)
         dosage = dosage.astype(int)
@@ -1073,7 +1076,9 @@ class PredictionRecords(BaseRecords):
 
         labels = tuple(labels)
         if as_genotype_keys:
-            return self._haplotype_labels_to_genotype_keys(cb, labels)
+            return self._haplotype_labels_to_genotype_keys(
+                cb, labels, preserve_order=preserve_order
+            )
         return labels
 
     def to_frame(self, cb_whitelist=None, dtype=None):

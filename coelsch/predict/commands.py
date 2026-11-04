@@ -59,9 +59,11 @@ def run_predict(marker_json_fn, output_json_fn, *,
         Type of distribution to use in rHMM - can be either poisson, nb, or auto.
         auto uses poisson for single cell and nb for resequencing data.
     zero_inflation : bool or str, optional
-        Whether to use zero inflation for 
+        Whether to use zero inflation for distributions
+        (auto uses ZI for single cell and no ZI for bulk/resequencing data)
     independent_meioses : bool or str, optional
-        add here
+        Whether to model independent meioses with separate haploid HMMs for supported 
+        three-way and four-way crosses ('auto' enables this for compatible founder-based designs).
     sample_paths : bool, optional
         Whether to sample stochastic crossover locations for each barcode (default: True)
     n_samples : int, optional

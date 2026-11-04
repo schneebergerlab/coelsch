@@ -1,4 +1,4 @@
-def kolle_alaaf():
+def coelle_alaaf():
     B = "\033[1m" # bold
     R = "\033[0m" # reset
     BR = "\033[30;41m" # black fg red bg

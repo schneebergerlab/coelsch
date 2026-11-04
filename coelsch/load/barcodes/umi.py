@@ -37,14 +37,30 @@ def umi_dedup_directional(
         if edit_dist(umi_i, umi_j) <= 1:
             umi_i_count = umi_counts[umi_i]
             umi_j_count = umi_counts[umi_j]
-            if umi_i_count >= (2 * umi_j_count + 1):
+            if umi_i_count >= (2 * umi_j_count - 1):
                 edges[umi_i].add(umi_j)
-    deduped = deepcopy(umi_hap_counts)
+
+    deduped = {}
+    visited = set()
+
     for parent in nodes:
-        for child in edges[parent]:
-            try:
-                deduped[parent] += deduped.pop(child)
-            except KeyError:
-                # umi already merged to a different parent
+        if parent in visited:
+            continue
+
+        stack = [parent]
+        merged = deepcopy(umi_hap_counts[parent])
+
+        while stack:
+            umi = stack.pop()
+            if umi in visited:
                 continue
+            visited.add(umi)
+
+            if umi != parent:
+                merged += umi_hap_counts[umi]
+
+            stack.extend(edges[umi])
+
+        deduped[parent] = merged
+
     return deduped

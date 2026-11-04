@@ -32,9 +32,10 @@ def parse_sample_alleles(variant, ref_name):
     for sample_id, sample in variant.samples.items():
         if len(sample.alleles) > 1:
             raise ValueError('Only haploid haplotype calls are allowed for each sample')
-        if not sample.allele_indices[0]:
+        allele = sample.allele_indices[0]
+        if allele == 0:
             ref_samples.add(sample_id)
-        else:
+        elif allele == 1:
             alt_samples.add(sample_id)
     return frozenset(ref_samples), frozenset(alt_samples)
 

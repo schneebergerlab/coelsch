@@ -45,10 +45,16 @@ def train_rhmm(co_markers, cm_per_mb=4.5,
         Distance below segment_size at which recombination rate halves to enforce crossover-interference
     dist_type : str, optional
         Type of distribution to use in rHMM - can be either poisson or nb.
-    max_training_sequences : int, optional
-        The maximum number of sequences to use for training. Datasets with more sequences are randomly undersampled.
+    zero_inflation : bool or str, optional
+        Whether to use zero inflation for distributions
+        (auto uses ZI for single cell and no ZI for bulk/resequencing data)
     mask_empty_bins : bool, optional
         Use masked arrays/tensors for bins which are empty in all barcodes (i.e. have no markers/are masked)
+    independent_meioses : bool or str, optional
+        Whether to model independent meioses with separate haploid HMMs for supported 
+        three-way and four-way crosses ('auto' enables this for compatible founder-based designs).
+    max_training_sequences : int, optional
+        The maximum number of sequences to use for training. Datasets with more sequences are randomly undersampled.
     device : torch.device, optional
         Device to initialize the model on (default: cpu).
     rng : np.random.Generator, optional

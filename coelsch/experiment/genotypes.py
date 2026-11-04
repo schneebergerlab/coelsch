@@ -8,6 +8,7 @@ class GenotypeKey:
     name: str = None
     parental_roles: str = "undefined"
     sex_roles: tuple = ()
+    preserve_order: bool = False
     leaves: tuple = field(init=False, repr=False)
     founders: tuple = field(init=False, repr=False)
     founder_set: frozenset = field(init=False)
@@ -34,9 +35,13 @@ class GenotypeKey:
         if parental_roles == "sexed":
             role_map = self._fill_default_sex_roles(tree, role_map)
             self._validate_sex_roles(tree, role_map)
-            tree, role_map = self._canonicalise_sexed_tree(tree, role_map)
+
+            if not self.preserve_order:
+                tree, role_map = self._canonicalise_sexed_tree(tree, role_map)
+
         else:
-            tree = self._canonicalise_undefined_tree(tree)
+            if not self.preserve_order:
+                tree = self._canonicalise_undefined_tree(tree)
             role_map = {}
 
         leaves = self._leaves(tree)
@@ -370,19 +375,17 @@ class GenotypeKey:
         }
 
     def _identity(self):
-        if self.parental_roles == "sexed":
-            return (
-                self.name,
-                self.parental_roles,
-                self.genotype,
-                tuple(sorted(self.sex_roles)),
-            )
-
-        return (
+        identity = (
             self.name,
             self.parental_roles,
+            self.preserve_order,
             self.genotype,
         )
+
+        if self.parental_roles == "sexed":
+            identity += (self.sex_roles,)
+
+        return identity
 
     def __eq__(self, other):
         if not isinstance(other, GenotypeKey):
@@ -522,6 +525,7 @@ class GenotypeKey:
             name=name,
             parental_roles=self.parental_roles,
             sex_roles=tuple(parent_roles.items()),
+            preserve_order=self.preserve_order,
         )
 
     @property
@@ -538,6 +542,7 @@ class GenotypeKey:
             name=name,
             parental_roles=self.parental_roles,
             sex_roles=tuple(parent_roles.items()),
+            preserve_order=self.preserve_order,
         )
 
     @property

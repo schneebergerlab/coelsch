@@ -114,7 +114,7 @@ def run_clean(marker_json_fn, output_json_fn, *,
         apply_per_geno = False
 
     n = len(co_markers)
-    if min_markers_per_cb:
+    if min_markers_per_cb or min_markers_per_chrom:
         co_markers = filter_low_coverage_barcodes(
             co_markers, min_markers_per_cb, min_markers_per_chrom, with_copy=False
         )

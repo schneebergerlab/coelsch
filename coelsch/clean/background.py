@@ -76,7 +76,7 @@ def estimate_overall_background_signal(co_markers, conv_window_size, max_frac_bg
             if frac_bg[cb] > max_frac_bg:
                 co_markers.pop(cb)
         bg_signal = {
-            chrom: sig / sig.sum(axis=None)
+            chrom: sig / sig.sum() if sig.sum() > 0 else np.zeros_like(sig, dtype=float)
             for chrom, sig in bg_signal.items()
         }
         background_signal[geno] = bg_signal

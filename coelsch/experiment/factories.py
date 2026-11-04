@@ -241,6 +241,7 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
             (left_genotype.to_nested_tuple(),
              right_genotype.to_nested_tuple()),
             name=sample,
+            preserve_order=True
         )
         experiment_params.check_compatibility(genotype)
         positional_genotypes.add_genotype(genotype)
@@ -254,7 +255,9 @@ def _setup_from_double_parental_predictions(left, right, experiment_params):
                     left_pos_genotype.to_nested_tuple(),
                     right_pos_genotype.to_nested_tuple(),
                 )
-                positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(pos_tree, name=sample)
+                positional_genotypes[(chrom, bin_idx)][genotype] = GenotypeKey(
+                    pos_tree, name=sample, preserve_order=True
+                )
 
     return ExperimentalDesign(
         positional_genotypes.genotypes,
@@ -277,7 +280,9 @@ def _setup_from_single_parental_predictions(record, experiment_params):
         positional_genotypes.add_genotype(genotype)
 
         for chrom in record.chrom_sizes:
-            pos_genotypes = record.get_haplotype_labels(sample, chrom, as_genotype_keys=True)
+            pos_genotypes = record.get_haplotype_labels(
+                sample, chrom, as_genotype_keys=True, preserve_order=True
+            )
             for bin_idx, pos_genotype in enumerate(pos_genotypes):
                 positional_genotypes[(chrom, bin_idx)][genotype] = pos_genotype
 

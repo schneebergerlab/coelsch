@@ -127,6 +127,8 @@ def validate_pred_input(kwargs):
     bin_size = kwargs.get('bin_size')
     seg_size = kwargs.get('segment_size')
     tseg_size = kwargs.get('terminal_segment_size')
+    if kwargs.get('zero_inflation', None) is None:
+        kwargs['zero_inflation'] = 'auto'
     if kwargs.get('independent_meioses', None) is None:
         kwargs['independent_meioses'] = 'auto'
     if seg_size < bin_size:

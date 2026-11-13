@@ -62,8 +62,8 @@ def chrom_markerplot(co_markers, chrom_size, bin_size, ax=None, max_yheight='aut
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
-    ax.vlines(pos, base, ref_markers, color=palette[0], zorder=0, linewidths=linewidths)
-    ax.vlines(pos, base, alt_markers, color=palette[1], zorder=0, linewidths=linewidths)
+    ax.vlines(pos, base, ref_markers, color=palette[0], zorder=1, linewidths=linewidths)
+    ax.vlines(pos, base, alt_markers, color=palette[1], zorder=1, linewidths=linewidths)
     if alt2_markers is not None:
         ax.vlines(pos, alt_markers, alt2_markers, color=palette[2], zorder=0, linewidths=linewidths)
     ax.plot([0, chrom_size], [0, 0], ls='-', color='#252525')

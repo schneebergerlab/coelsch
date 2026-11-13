@@ -171,7 +171,7 @@ class BAMHaplotypeIntervalReader:
         """
         assert bin_idx < self.nbins[chrom]
         bin_start = self.bin_size * bin_idx
-        bin_end = bin_start + self.bin_size - 1
+        bin_end = min(bin_start + self.bin_size, self.chrom_sizes[chrom])
 
         interval_counts = IntervalUMICounts(
             chrom, bin_idx, self.umi_collapse_method,

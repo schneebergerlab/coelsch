@@ -195,5 +195,5 @@ def alaaf(**kwargs):
     '''
     How to cite coelsch
     '''
-    from .utils import kolle_alaaf
-    log.info(kolle_alaaf())
+    from .utils import coelle_alaaf
+    log.info(coelle_alaaf())

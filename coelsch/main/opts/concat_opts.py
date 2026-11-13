@@ -1,11 +1,14 @@
 import re
+from logging import getLogger
 from .coelsch_opts import coelsch_opts
+
+log = getLogger('coelsch')
 
 
 def _parse_merge_suffixes(ctx, param, value):
     if value is not None:
         value = value.strip(',')
-        if not re.match('^[a-zA-Z0-9,]+$', value):
+        if not re.match('^[a-zA-Z0-9_,]+$', value):
             log.error('merge suffixes must be alphanumeric only')
         value = value.split(',')
     return value
@@ -21,3 +24,13 @@ coelsch_opts.option(
     help=('comma separated list of suffixes to append to cell barcodes from '
           'each file. Must be alphanumeric with same length as no. json-fns')
 )
+
+
+coelsch_opts.option(
+    '--suppress-suffixes',
+    subcommands=['concat'],
+    is_flag=True,
+    default=False,
+    help='Do not append suffixes to cell barcodes when concatenating files.'
+)
+

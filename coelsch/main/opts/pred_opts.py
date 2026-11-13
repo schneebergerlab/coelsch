@@ -54,9 +54,23 @@ coelsch_opts.option(
     '--distribution-type',
     subcommands=['predict', 'bam2pred', 'csl2pred'],
     required=False,
-    type=click.Choice(['poisson', 'nb']),
-    default='poisson',
-    help=('type of underlying distribution used to model the count data. Can be either poisson or nb')
+    type=click.Choice(['poisson', 'nb', 'auto']),
+    default='auto',
+    help=('Type of underlying distribution used to model the count data. Can be either poisson, nb or auto. '
+          'auto sets to poisson for single cell data and nb for bulk/wgs data')
+)
+
+
+coelsch_opts.option(
+    '--zero-inflation/--no-zero-inflation',
+    subcommands=['predict', 'bam2pred', 'csl2pred'],
+    required=False,
+    default=None,
+    help=(
+        'Whether to use zero inflated distributions to model the count data. Default is to use ZI for '
+        'single cell and no ZI for bulk/wgs data. Note that bins that are masked during cleaning do not '
+        'contribute to the model.'
+    )
 )
 
 

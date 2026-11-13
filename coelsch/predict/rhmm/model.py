@@ -71,6 +71,8 @@ class RigidHMM:
         Probability of transition between rigid states.
     dist_type: str
         Sets the underlying distributions used in the model. Can be either "poisson" or "nb"
+    zero_inflation : bool
+        Whether the underlying distributions have a zero inflated component
     fg_params : dict
         Foreground model params (dict with value "lambda" if dist_type == "poisson"
         or values ["mean", "alpha"] if dist_type == "nb")
@@ -87,7 +89,7 @@ class RigidHMM:
     """
 
     def __init__(self, states, rfactor, term_rfactor, trans_prob,
-                 fg_params, bg_params, dist_type='poisson', trans_prob_decay_rate=0.25,
+                 fg_params, bg_params, dist_type='poisson', zero_inflation=True, trans_prob_decay_rate=0.25,
                  n_haplotypes=None, allow_uneven_ploidy=False, device=DEFAULT_DEVICE):
         for hap_comb in states:
             if not isinstance(hap_comb, (tuple, list)):
@@ -121,6 +123,7 @@ class RigidHMM:
         self.trans_prob_decay_rate = float(trans_prob_decay_rate)
         assert 0.0 < self.trans_prob < 1.0
         self.dist_type = dist_type.lower()
+        self.zero_inflation = zero_inflation
         self.fg_params = fg_params
         self.bg_params = bg_params
         if self.dist_type == "poisson":
@@ -227,9 +230,17 @@ class RigidHMM:
                 alphas[hap] = param_vector(self.fg_params, "alpha")[hap]
 
         if self.dist_type == "poisson":
-            return ZeroInflated(pmd.Poisson(lambdas), priors=priors)
+            return ZeroInflated(
+                pmd.Poisson(lambdas),
+                priors=priors,
+                zero_inflation=self.zero_inflation
+            )
 
-        return ZeroInflated(NegativeBinomial(means, alphas), priors=priors)
+        return ZeroInflated(
+            NegativeBinomial(means, alphas),
+            priors=priors,
+            zero_inflation=self.zero_inflation
+        )
 
     def _create_rigid_chain(self, state_idx):
         state = self.states[state_idx]
@@ -545,6 +556,7 @@ class RigidHMM:
             'trans_prob': float(self.trans_prob),
             'trans_prob_decay_rate': float(self.trans_prob_decay_rate),
             'is_poisson': 1.0 if self.dist_type == 'poisson' else 0.0,
+            'zero_inflation': float(self.zero_inflation),
             'fg_lambda': list(self.fg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'bg_lambda': list(self.bg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'fg_mean': list(self.fg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
@@ -592,6 +604,7 @@ class RigidHMM:
             params['states'], params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
+            zero_inflation=bool(params.get('zero_inflation', 1.0)),
             trans_prob_decay_rate=params['trans_prob_decay_rate'],
             n_haplotypes=int(n_haplotypes),
             device=device

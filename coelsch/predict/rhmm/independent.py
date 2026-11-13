@@ -34,7 +34,7 @@ class IndependentMeiosesHMM:
 
     def __init__(self, crossing_strategy,
                  rfactor, term_rfactor, trans_prob,
-                 fg_params, bg_params, dist_type='poisson',
+                 fg_params, bg_params, dist_type='poisson', zero_inflation=True,
                  trans_prob_decay_rate=0.25, device=DEFAULT_DEVICE):
 
         if crossing_strategy == 'four_way':
@@ -65,6 +65,7 @@ class IndependentMeiosesHMM:
                 fg_params=_extract_haplotype_params(fg_params, meiosis_haplotypes),
                 bg_params=_extract_haplotype_params(bg_params, meiosis_haplotypes),
                 dist_type=dist_type,
+                zero_inflation=zero_inflation,
                 trans_prob_decay_rate=trans_prob_decay_rate,
                 allow_uneven_ploidy=uneven_ploidy,
                 device=device
@@ -86,6 +87,7 @@ class IndependentMeiosesHMM:
         self.trans_prob = float(trans_prob)
         self.trans_prob_decay_rate = float(trans_prob_decay_rate)
         self.dist_type = dist_type.lower()
+        self.zero_inflation = zero_inflation
         self.fg_params = fg_params
         self.bg_params = bg_params
 
@@ -202,6 +204,7 @@ class IndependentMeiosesHMM:
             'trans_prob': float(self.trans_prob),
             'trans_prob_decay_rate': float(self.trans_prob_decay_rate),
             'is_poisson': 1.0 if self.dist_type == 'poisson' else 0.0,
+            'zero_inflation': float(self.zero_inflation),
             'fg_lambda': list(self.fg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'bg_lambda': list(self.bg_params['lambda']) if self.dist_type == 'poisson' else [np.nan,] * n,
             'fg_mean': list(self.fg_params['mean']) if self.dist_type == 'nb' else [np.nan,] * n,
@@ -251,6 +254,7 @@ class IndependentMeiosesHMM:
             crossing_strategy, params['rfactor'], params['term_rfactor'],
             params['trans_prob'], fg_params, bg_params,
             dist_type='poisson' if params['is_poisson'] else 'nb',
+            zero_inflation=bool(params.get('zero_inflation', 1.0)),
             trans_prob_decay_rate=params['trans_prob_decay_rate'],
             device=device
         )

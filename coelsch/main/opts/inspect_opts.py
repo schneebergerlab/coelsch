@@ -25,6 +25,14 @@ coelsch_opts.option(
 
 
 coelsch_opts.option(
+    '--cmd/--no-cmd',
+    subcommands=['inspect'],
+    default=False,
+    help='Prints the commands used to generate the file'
+)
+
+
+coelsch_opts.option(
     '-q', '--query',
     subcommands=['inspect'],
     default=None,

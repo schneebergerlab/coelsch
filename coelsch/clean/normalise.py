@@ -37,7 +37,7 @@ def normalise_bin_coverage(co_markers, shrinkage_q=0.99, allow_upweight=False, m
         If False, only down-weighting of high-coverage bins is performed.
         If True, bins with moderately low coverage may also be up-weighted toward a
         representative depth (the median bin coverage), subject to caps and thresholds.
-    max_upweight : float, optional, default=4.0
+    max_upweight : float, optional, default=2.0
         Maximum multiplicative factor applied when up-weighting low-coverage bins.
         Only used when `allow_upweight=True`.
     binwise_hap_mode : "independent" or "shared", optional, default "shared"

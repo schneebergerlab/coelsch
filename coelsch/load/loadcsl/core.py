@@ -190,15 +190,14 @@ def cellsnp_lite_to_co_markers(csl_dir, chrom_sizes_fn,
             )
         geno = experimental_design.genotypes[0]
         # create a dummy genotypes object where all barcodes have the same genotype
-        genotypes = NestedData(
-            levels=('cb',),
-            dtype=GenotypeKey,
-            data={cb: geno for ic in inv_counts for cb in ic.counts},
+        co_markers.add_metadata(
+            genotypes=NestedData(
+                levels=('cb',),
+                dtype=str,
+                data={cb: str(geno) for cb in genotypes},
+            )
         )
         inv_counts = resolve_inv_counts_to_co_markers(inv_counts, genotypes, experimental_design)
-        co_markers.add_metadata(
-            genotypes=genotypes,
-        )
 
     for ic in inv_counts:
         co_markers.update(ic)

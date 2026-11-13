@@ -12,11 +12,21 @@ log = logging.getLogger('coelsch')
 LOD = 2 * np.log(10)
 
 
-def _chrom_haplotype_probabilities(co_preds, chrom):
-    arr = co_preds[:, chrom].stack_values()
-    if arr.ndim == 2:
-        return np.stack([co_preds.experiment_params.ploidy - arr, arr], axis=2)
-    return arr
+def _chrom_haplotype_probabilities(co_preds, chrom, haplotype=None):
+
+    if haplotype is None:
+        return (
+            co_preds.get_haplotype_dosage(chrom=chrom).stack_values()
+            / co_preds.experiment_params.ploidy
+        )
+
+    seen_haps = []
+    for h, arr in co_preds.iter_scalar_haplotypes(chrom=chrom):
+        if h == haplotype:
+            return np.stack([1.0 - arr, arr], axis=2)
+        seen_haps.append(h)
+
+    raise ValueError(f'Haplotype "{haplotype}" not seen, try one of: {seen_haps}')
 
 
 def _expected_contingency(expected_probs, order):
@@ -132,6 +142,7 @@ def downsample_chrom(chrom_co_preds, bin_size, resolution):
 def segregation_distortion(co_preds,
                            order=1,
                            resolution=250_000,
+                           haplotype=None,
                            processes=1):
     """
     Perform genome-wide scan for segregation distortion.
@@ -144,6 +155,9 @@ def segregation_distortion(co_preds,
         Number of loci to test jointly. 1 for single-locus, 2+ for multi-locus distortion.
     resolution : int, default=250000
         Bin resolution to downsample to before distortion testing.
+    haplotype : str or None
+        which haplotype to use to perform segregation distortion analysis,
+        can be "parent1", "parent1", or None (for either/both)
     processes : int, default=1
         Number of parallel processes to use.
 
@@ -158,10 +172,17 @@ def segregation_distortion(co_preds,
     if order < 1 or order > 3:
         raise ValueError('segregation distortion order must be between 1 and 3')
 
-    expected_probs = np.asarray(co_preds.experiment_params.haplotype_dosage, dtype=float)
+    params = co_preds.experiment_params
+    if haplotype is None:
+        expected_probs = np.asarray(params.haplotype_dosage, dtype=float)
+        expected_probs /= params.ploidy
+    else:
+        idx = {'parent1': 1, 'parent2': 3}[haplotype]
+        p = params.haplotype_dosage[idx]
+        expected_probs = np.array([1 - p, p])
     expected_probs = expected_probs / expected_probs.sum()
     co_preds_low_res = {
-        c: downsample_chrom(_chrom_haplotype_probabilities(co_preds, c),
+        c: downsample_chrom(_chrom_haplotype_probabilities(co_preds, chrom=c, haplotype=haplotype),
                             co_preds.bin_size,
                             resolution)
         for c in co_preds.chrom_sizes

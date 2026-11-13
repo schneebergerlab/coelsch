@@ -68,7 +68,7 @@ The `loadbam` and `loadcsl` commands that construct marker records need enough i
 Crossing combinations use genotype expressions such as:
 
 ```text
-(col0*ler)                # F1
+(col0*ler)                # F1 or F2 (defined by --crossing-strategy)
 (col0*(col0*ler))         # backcross
 (col0*(ler*cvi0))         # testcross
 ((col0*ler)*(col0*cvi0))  # three_way
@@ -76,7 +76,7 @@ Crossing combinations use genotype expressions such as:
 (col0[f]*ler[m])          # F1 with crossing direction defined
 ```
 
-The crossing strategy determines the expected haplotype channels, possible inheritance states, expected marker ratios and how crossovers are interpreted. When more than one genotype is provided (as a comma separated list) to `--crossing-combinations`, genotyping mode is switched on and barcodes will be assigned to the provided genotypes using expectation maximisation, for instance:
+The crossing strategy determines the expected haplotype channels, marker ratios and how crossovers are interpreted. When more than one genotype is provided (as a comma separated list) to `--crossing-combinations`, genotyping mode is switched on and barcodes will be assigned to the provided genotypes using expectation maximisation, for instance:
 
 ```bash
 --lifecycle-stage gametes
@@ -87,6 +87,18 @@ The crossing strategy determines the expected haplotype channels, possible inher
 ```
 
 is the standard design for pooled pollen sequencing from F1 hybrids, and barcodes will be genotyped based on the number of reads mapping to Ler-0, Cvi-0 or Ws-4 respectively.
+
+In contrast, for progeny sequencing of a diploid backcross library, then the following definition should be used:
+
+```bash
+--lifecycle-stage progeny
+--crossing-strategy backcross
+--genotyping-strategy founder
+--crossing-combinations "(col0*(col0*ler))"
+--sample-unit bulk
+```
+
+Most experiment designs and crossing strategies should be supported. If you think your design is not supported, please open an issue!
 
 `coelsch` also supports more complex designs where pre-meiotic genotypes are themselves recombinants of founder haplotypes. This can be switched on by setting `--genotyping-strategy=recombinant` and providing a `PredictionRecords` json of recombinant diploid genotypes using `--recombinant-parent-json` to `loadbam` or `loadcsl`:
 
@@ -102,15 +114,15 @@ In this mode, gametes will be assigned to these recombinant genotypes before ide
 
 ### Input Types
 
-`loadbam` reads BAM files containing cell/sample barcode tags and haplotype tags. It is intended for BAMs produced by haplotype-aware alignment workflows, including the accompanying `coelsch_mapping_pipeline` Snakemake workflow.
+`loadbam` reads BAM files containing cell/sample barcode tags and haplotype tags. It is intended for BAMs produced by haplotype-aware alignment workflows. The haplotype tag should contain a comma separated list of haplotypes that the read identifies: for example, in a bam file generated from sequencing reads from the cross `(col0*(ler*cvi0))`, the haplotype tag `col0,cvi0` would indicate that the corresponding read aligns equally well to Col-0 and Cvi-0 (and not to Ler). We recommend using the accompanying `coelsch_mapping_pipeline` Snakemake workflow to perform haplotype-aware alignment.
 
-`loadcsl` reads `cellsnp-lite` matrix output and a VCF describing parental SNPs. For simple designs, reference/alternative alleles can be interpreted as placeholder haplotypes. For more complex founder designs, the experimental design metadata determines how haplotypes are represented downstream.
+Alternatively, `loadcsl` reads `cellsnp-lite` matrix output and a VCF describing parental SNPs. For simple designs, reference/alternative alleles can be interpreted as placeholder haplotypes. For more complex founder designs, the experimental design metadata determines how haplotypes are represented downstream.
 
 ### Record JSONs
 
 `MarkerRecords` store binned marker counts for each barcode/sample, chromosome and haplotype channel.
 
-`PredictionRecords` store predicted marginal haplotype dosages or probabilities for each barcode/sample and genomic bin. For multihaplotype designs, columns correspond to haplotype channels. For two-haplotype records, some APIs may expose a scalar representation, but helper methods can recover matrix-shaped haplotype dosage output.
+`PredictionRecords` store predicted haplotype probabilities/dosages for each barcode/sample and genomic bin. For multihaplotype designs, columns correspond to haplotype channels defined by the genotyping key (which is contained in metadata).
 
 Marker and Prediction JSONs are encoded using sparse or rle compression to reduce file size. The encoded files should be read through `MarkerRecords.read_json()` `PredictionRecords.read_json()` or `coelsch.utils.load_json()` rather than parsed manually.
 
@@ -134,7 +146,7 @@ co_markers = MarkerRecords.read_json('markers_filt.json')
 co_preds = PredictionRecords.read_json('pred.json')
 
 co_markers.barcodes[:5]
-co_preds.get_haplotype_dosage(cb='sample_001', chrom='chr1')
+co_preds.get_haplotype_dosage(cb='GCTATCCCAAGTAGAG', chrom='chr1')
 ```
 
 Plotting is available from the command line with `coelsch plot` and from Python through `coelsch.plot` or record helper methods:
